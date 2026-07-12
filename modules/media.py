@@ -28,6 +28,21 @@ from .templates import render_template_text, strip_auto_media_text
 logger = logging.getLogger("plugin.foolllll.keywords-reply")
 
 _MENTION_PATTERN = re.compile(r"\[@\s*(\d+)\]")
+_ONEBOT_MUSIC_PLATFORMS = frozenset({"163", "qq", "migu", "kugou", "kuwo"})
+_NETEASE_URL_ID_PATTERN = re.compile(
+    r"(?:https?://)?(?:y\.)?music\.163\.com[^\s]*[?&#]id=(\d+)",
+    re.IGNORECASE,
+)
+_MUSIC_SHARE_TEXT_PATTERN = re.compile(
+    r"^\s*\[(?:网易云音乐|QQ音乐)\]\s*.+?(?:\s*-\s*.+)?\s*$",
+    re.MULTILINE,
+)
+_MUSIC_TEXT_PLACEHOLDER_PATTERN = re.compile(
+    r"\[(?:网易云音乐|QQ音乐|音乐)[^\]]*\]",
+    re.IGNORECASE,
+)
+
+
 _MGMT_COMMAND_PATTERN = re.compile(
     r"/(?:添加|编辑|删除|启用|禁用|查看)(?:关键词|检测词)(?:回复)?(?:\s|$)"
 )
@@ -149,6 +164,112 @@ def _resolve_segment_binary_base64(seg: dict) -> str:
     return ""
 
 
+def _normalize_music_card(payload: Any) -> Optional[dict]:
+    """把 OneBot 音乐段负载规范化为 ``{platform, id, title, artist}``。"""
+
+    if not isinstance(payload, dict):
+        return None
+
+    raw_type = str(payload.get("type") or payload.get("platform") or "").strip().lower()
+    if raw_type == "music":
+        inner = payload.get("data", payload)
+        return _normalize_music_card(inner)
+
+    song_id = str(payload.get("id") or payload.get("song_id") or payload.get("mid") or "").strip()
+    if raw_type in _ONEBOT_MUSIC_PLATFORMS and song_id:
+        return {
+            "platform": raw_type,
+            "id": song_id,
+            "title": str(payload.get("title") or payload.get("name") or "").strip(),
+            "artist": str(
+                payload.get("author") or payload.get("artist") or payload.get("singer") or ""
+            ).strip(),
+        }
+    return None
+
+
+def _extract_music_from_text(text: str) -> Optional[dict]:
+    """从文本或链接中尽力解析网易云音乐卡片信息。"""
+
+    normalized = str(text or "").strip()
+    if not normalized:
+        return None
+
+    url_match = _NETEASE_URL_ID_PATTERN.search(normalized)
+    if url_match:
+        return {"platform": "163", "id": url_match.group(1), "title": "", "artist": ""}
+    return None
+
+
+def _extract_music_from_segment(seg: dict) -> Optional[dict]:
+    """从单个消息段提取 OneBot 音乐卡片。"""
+
+    if not isinstance(seg, dict):
+        return None
+
+    seg_type = str(seg.get("type", "")).strip().lower()
+    if seg_type == "music":
+        return _normalize_music_card(_segment_data(seg))
+
+    if seg_type == "dict":
+        data = seg.get("data")
+        if isinstance(data, dict):
+            if str(data.get("type", "")).strip().lower() == "music":
+                return _normalize_music_card(data.get("data", data))
+            return _normalize_music_card(data)
+
+    if seg_type == "text":
+        return _extract_music_from_text(str(_segment_data(seg) or ""))
+
+    return None
+
+
+def _append_music_card(entry: dict, card: Optional[dict]) -> None:
+    """向 entry 追加去重后的音乐卡片。"""
+
+    if not card or not isinstance(entry, dict):
+        return
+    platform = str(card.get("platform") or "").strip()
+    song_id = str(card.get("id") or "").strip()
+    if not platform or not song_id:
+        return
+
+    cards = entry.setdefault("music_cards", [])
+    for existing in cards:
+        if (
+            str(existing.get("platform") or "").strip() == platform
+            and str(existing.get("id") or "").strip() == song_id
+        ):
+            return
+    cards.append(
+        {
+            "platform": platform,
+            "id": song_id,
+            "title": str(card.get("title") or "").strip(),
+            "artist": str(card.get("artist") or "").strip(),
+        }
+    )
+
+
+def _build_music_send_segment(card: dict) -> Optional[dict]:
+    """构建 MaiBot/OneBot 可识别的音乐卡片发送段。"""
+
+    platform = str(card.get("platform") or "").strip()
+    song_id = str(card.get("id") or "").strip()
+    if not platform or not song_id:
+        return None
+    return {
+        "type": "dict",
+        "data": {
+            "type": "music",
+            "data": {
+                "type": platform,
+                "id": song_id,
+            },
+        },
+    }
+
+
 def _append_media_segment(entry: dict, store: KeywordsStore, seg_type: str, seg: dict) -> None:
     """把单个媒体段写入 entry 对应列表。"""
 
@@ -162,6 +283,18 @@ def _append_media_segment(entry: dict, store: KeywordsStore, seg_type: str, seg:
     filename = store.save_media_base64(media_key, b64)
     if filename:
         entry[media_key].append({"file": filename})
+
+
+def _strip_music_share_text(text: str) -> str:
+    """当已保存音乐卡片时，移除 ``[网易云音乐] 歌名 - 歌手`` 类分享文本。"""
+
+    cleaned = str(text or "").strip()
+    if not cleaned:
+        return ""
+    cleaned = _MUSIC_TEXT_PLACEHOLDER_PATTERN.sub("", cleaned).strip()
+    if _MUSIC_SHARE_TEXT_PATTERN.fullmatch(cleaned):
+        return ""
+    return re.sub(r"\s+", " ", cleaned).strip()
 
 
 def build_entry_from_segments(
@@ -178,9 +311,12 @@ def build_entry_from_segments(
         if not isinstance(seg, dict):
             continue
         seg_type = str(seg.get("type", "")).strip().lower()
+        music_card = _extract_music_from_segment(seg)
 
         if seg_type == "text":
-            if include_text:
+            if music_card:
+                _append_music_card(entry, music_card)
+            elif include_text:
                 content = str(_segment_data(seg) or "")
                 if content:
                     plain, inline_ats = extract_inline_ats(content)
@@ -196,6 +332,8 @@ def build_entry_from_segments(
                     entry["ats"].append({"user_id": uid, "nickname": nickname, "all": uid.lower() == "all"})
         elif seg_type in ("image", "emoji", "voice", "record"):
             _append_media_segment(entry, store, seg_type, seg)
+        elif seg_type == "music":
+            _append_music_card(entry, music_card)
         elif seg_type == "face":
             data = _segment_data(seg) or {}
             if isinstance(data, dict) and data.get("id") is not None:
@@ -212,9 +350,13 @@ def build_entry_from_segments(
                     face_id = face_data.get("id") if isinstance(face_data, dict) else None
                     if face_id is not None:
                         entry["faces"].append({"id": face_id})
+                elif music_card:
+                    _append_music_card(entry, music_card)
 
     if include_text:
         entry["text"] = strip_auto_media_text("".join(text_parts).strip())
+        if entry.get("music_cards"):
+            entry["text"] = _strip_music_share_text(entry["text"])
     else:
         entry["text"] = ""
     return entry
@@ -268,9 +410,13 @@ def sanitize_entry_text(entry: dict, store: KeywordsStore) -> dict:
     entry["ats"] = dedupe_entry_ats(entry.get("ats") or [])
     entry["text"] = strip_text_at_mentions(str(entry.get("text", "") or ""), entry["ats"])
 
-    has_media = bool(entry.get("images") or entry.get("records") or entry.get("emojis"))
+    has_media = bool(
+        entry.get("images") or entry.get("records") or entry.get("emojis") or entry.get("music_cards")
+    )
     if has_media:
         entry["text"] = strip_auto_media_text(str(entry.get("text", "") or ""))
+        if entry.get("music_cards"):
+            entry["text"] = _strip_music_share_text(entry["text"])
     return entry
 
 
@@ -431,6 +577,11 @@ def build_send_segments(
 
     for face in entry.get("faces", []):
         segments.append({"type": "face", "data": {"id": face.get("id")}})
+
+    for music in entry.get("music_cards", []):
+        music_segment = _build_music_send_segment(music or {})
+        if music_segment:
+            segments.append(music_segment)
 
     for img in entry.get("images", []):
         b64 = store.read_media_base64("images", (img or {}).get("file", ""))

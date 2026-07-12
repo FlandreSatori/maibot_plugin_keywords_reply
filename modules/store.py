@@ -30,7 +30,8 @@
       "records": [{"file": "abc.amr"}],  # 语音，data_dir/records
       "ats": [{"user_id": "123", "nickname": "", "all": false}],
       "faces": [{"id": 1}],
-      "emojis": [{"file": "abc.gif"}]    # 表情包（sticker）
+      "emojis": [{"file": "abc.gif"}],   # 表情包（sticker）
+      "music_cards": [{"platform": "163", "id": "28481103", "title": "", "artist": ""}]
     }
 """
 
@@ -127,6 +128,7 @@ class KeywordsStore:
                     entry.setdefault("ats", [])
                     entry.setdefault("faces", [])
                     entry.setdefault("emojis", [])
+                    entry.setdefault("music_cards", [])
         return data
 
     async def save(self) -> None:
@@ -242,7 +244,15 @@ class KeywordsStore:
 
     @staticmethod
     def empty_entry() -> dict:
-        return {"text": "", "images": [], "records": [], "ats": [], "faces": [], "emojis": []}
+        return {
+            "text": "",
+            "images": [],
+            "records": [],
+            "ats": [],
+            "faces": [],
+            "emojis": [],
+            "music_cards": [],
+        }
 
     @staticmethod
     def entry_has_payload(entry: Optional[dict]) -> bool:
@@ -254,6 +264,7 @@ class KeywordsStore:
             or entry.get("ats")
             or entry.get("faces")
             or entry.get("emojis")
+            or entry.get("music_cards")
         )
 
     @staticmethod
@@ -267,7 +278,7 @@ class KeywordsStore:
         else:
             merged_text = primary_text or secondary_text
         merged = {"text": merged_text}
-        for key in ("images", "records", "ats", "faces", "emojis"):
+        for key in ("images", "records", "ats", "faces", "emojis", "music_cards"):
             merged[key] = list(primary.get(key, [])) + list(secondary.get(key, []))
         return merged
 
@@ -288,6 +299,8 @@ class KeywordsStore:
             placeholders.append("[@]")
         if entry.get("faces"):
             placeholders.append("[表情ID]")
+        if entry.get("music_cards"):
+            placeholders.append("[音乐]")
         if not summary:
             return "".join(placeholders) or "[空]"
         return f"{summary}{''.join(placeholders)}"
@@ -305,4 +318,6 @@ class KeywordsStore:
             lines.append(f"[表情 x{len(entry['emojis'])}]")
         if entry.get("ats"):
             lines.append(f"[@ x{len(entry['ats'])}]")
+        if entry.get("music_cards"):
+            lines.append(f"[音乐 x{len(entry['music_cards'])}]")
         return "\n".join(lines).strip()
