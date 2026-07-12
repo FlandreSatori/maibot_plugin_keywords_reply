@@ -103,6 +103,19 @@ class TemplateConfig(PluginConfigBase):
     enable_text_template: bool = Field(default=True, description="启用回复文本变量模板")
 
 
+class MediaCacheConfig(PluginConfigBase):
+    """入站媒体缓存配置。"""
+
+    __ui_label__ = "媒体缓存"
+    __ui_icon__ = "database"
+    __ui_order__ = 5
+
+    group_whitelist: list[str] = Field(
+        default_factory=list,
+        description="允许缓存入站富媒体（图片/语音/表情）的群号白名单；为空时不缓存任何消息",
+    )
+
+
 class KeywordsReplyConfig(PluginConfigBase):
     """关键词回复插件配置。"""
 
@@ -111,6 +124,7 @@ class KeywordsReplyConfig(PluginConfigBase):
     reply: ReplyConfig = Field(default_factory=ReplyConfig)
     detect: DetectConfig = Field(default_factory=DetectConfig)
     template: TemplateConfig = Field(default_factory=TemplateConfig)
+    media_cache: MediaCacheConfig = Field(default_factory=MediaCacheConfig)
 
 
 # ─── 插件主体 ──────────────────────────────────────────────────
@@ -120,20 +134,23 @@ class KeywordsReplyPlugin(MaiBotPlugin):
     """关键词回复插件。"""
 
     config_model = KeywordsReplyConfig
+    _MEDIA_CACHE_MAX = 500
 
     async def on_load(self) -> None:
         self.store = KeywordsStore(self.ctx.paths.data_dir)
         self.store.setup()
         self.matcher = Matcher(self.store, self._settings)
-        self._command_media_cache: Dict[str, dict] = {}
+        self._inbound_media_cache: Dict[str, dict] = {}
+        cache_groups = sorted(self._media_cache_group_whitelist())
         self.ctx.logger.info(
-            "关键词回复插件已加载：关键词 %d 条，检测词 %d 条",
+            "关键词回复插件已加载：关键词 %d 条，检测词 %d 条，媒体缓存群 %d 个",
             len(self.store.data.get(SECTION_KEYWORD, [])),
             len(self.store.data.get(SECTION_DETECT, [])),
+            len(cache_groups),
         )
 
     async def on_unload(self) -> None:
-        self._command_media_cache.clear()
+        self._inbound_media_cache.clear()
 
     async def on_config_update(self, scope: str, config_data: dict, version: str) -> None:
         del scope, config_data, version
@@ -195,6 +212,38 @@ class KeywordsReplyPlugin(MaiBotPlugin):
                 return cfg
         return None
 
+    @staticmethod
+    def _extract_group_id(message: Dict[str, Any]) -> str:
+        """从消息字典解析群号；私聊返回空字符串。"""
+
+        info = message.get("message_info", {}) if isinstance(message.get("message_info"), dict) else {}
+        group_info = info.get("group_info") or {}
+        if isinstance(group_info, dict):
+            return str(group_info.get("group_id", "") or "").strip()
+        return ""
+
+    def _media_cache_group_whitelist(self) -> set[str]:
+        return {str(x).strip() for x in (self.config.media_cache.group_whitelist or []) if str(x).strip()}
+
+    def _should_cache_inbound_media(self, message: Dict[str, Any]) -> bool:
+        """仅对白名单群聊缓存入站媒体，避免全量消息带来的性能开销。"""
+
+        whitelist = self._media_cache_group_whitelist()
+        if not whitelist:
+            return False
+        group_id = self._extract_group_id(message)
+        return bool(group_id) and group_id in whitelist
+
+    def _remember_inbound_media(self, message_id: str, entry: dict) -> None:
+        """缓存入站消息媒体，供后续引用导入使用（如引用语音后添加关键词）。"""
+
+        if not message_id or not self.store.entry_has_payload(entry):
+            return
+        self._inbound_media_cache[message_id] = entry
+        while len(self._inbound_media_cache) > self._MEDIA_CACHE_MAX:
+            oldest_key = next(iter(self._inbound_media_cache))
+            del self._inbound_media_cache[oldest_key]
+
     async def _build_entry(self, content: str, message: Dict[str, Any]) -> dict:
         """从命令正文 + 触发消息媒体 + 引用消息内容构建一条 entry。"""
 
@@ -205,7 +254,7 @@ class KeywordsReplyPlugin(MaiBotPlugin):
         message_id = str(message.get("message_id", "") or "").strip()
         cached_media: Optional[dict] = None
         if message_id:
-            cached = self._command_media_cache.pop(message_id, None)
+            cached = self._inbound_media_cache.pop(message_id, None)
             if isinstance(cached, dict) and self.store.entry_has_payload(cached):
                 cached_media = cached
 
@@ -215,7 +264,12 @@ class KeywordsReplyPlugin(MaiBotPlugin):
             trigger_media = await capture_media_from_trigger(self.ctx, self.store, message)
             entry = self.store.merge_entries(entry, trigger_media)
 
-        reply_imported = await capture_from_reply(self.ctx, self.store, message)
+        reply_imported = await capture_from_reply(
+            self.ctx,
+            self.store,
+            message,
+            media_cache=self._inbound_media_cache,
+        )
         entry = self.store.merge_entries(entry, reply_imported)
         return sanitize_entry_text(entry, self.store)
 
@@ -712,18 +766,21 @@ class KeywordsReplyPlugin(MaiBotPlugin):
     @HookHandler(
         "chat.receive.before_process",
         name="keywords_capture_command_media",
-        description="在 VLM 识图前缓存管理命令消息中的富媒体二进制",
+        description="在 VLM/ASR 处理前缓存入站消息富媒体二进制",
         mode=HookMode.BLOCKING,
         order=HookOrder.NORMAL,
     )
     async def capture_command_media_before_process(self, message: Any = None, **kwargs: Any):
-        """``message.process()`` 会清空图片二进制并生成 ``[图片：...]`` 描述。
+        """``message.process()`` 会清空图片二进制并生成占位描述。
 
         无法修改 MaiBot 主程序时，只能在此 Hook（位于 process 之前）抢先缓存媒体。
+        历史语音经 ``get_by_id`` 通常不带二进制，因此还需缓存每条入站语音供引用导入。
         """
 
         del kwargs
-        if not isinstance(message, dict) or not is_management_command_message(message):
+        if not isinstance(message, dict):
+            return {"action": "continue"}
+        if not self._should_cache_inbound_media(message):
             return {"action": "continue"}
 
         message_id = str(message.get("message_id", "") or "").strip()
@@ -732,8 +789,9 @@ class KeywordsReplyPlugin(MaiBotPlugin):
 
         cached = capture_media_from_message_dict(message, self.store)
         if self.store.entry_has_payload(cached):
-            self._command_media_cache[message_id] = cached
-            self.ctx.logger.debug(f"已缓存管理命令消息媒体: message_id={message_id}")
+            self._remember_inbound_media(message_id, cached)
+            if is_management_command_message(message):
+                self.ctx.logger.debug(f"已缓存管理命令消息媒体: message_id={message_id}")
         return {"action": "continue"}
 
     async def _try_auto_reply(self, message: Dict[str, Any]) -> str:

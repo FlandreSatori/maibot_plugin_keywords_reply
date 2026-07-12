@@ -30,3 +30,8 @@ ignore_cooldown_on_exact_match = false
 [template]
 # 是否启用回复文本变量模板替换（{user_id} {user_name} {group_id} {self_id} {platform} {message} {date} {time} {datetime}）。
 enable_text_template = true
+
+[media_cache]
+# 仅对白名单群聊缓存入站富媒体（图片/语音/表情），供引用消息导入与管理命令附图使用。
+# 为空时不缓存任何消息，可最大限度降低性能开销；请手动填入需要管理的群号。
+group_whitelist = []

@@ -52,7 +52,41 @@ def extract_inline_ats(text: str) -> tuple[str, List[dict]]:
 
 
 def _segment_data(seg: dict) -> Any:
+    """读取消息段负载，兼容 ``data`` 与 ``content`` 两种字段名。"""
+
+    seg_type = str(seg.get("type", "")).strip().lower()
+    if seg_type in {"image", "emoji", "voice"} and seg.get("content") is not None:
+        return seg.get("content")
     return seg.get("data")
+
+
+def _looks_like_base64(value: str) -> bool:
+    """判断字符串是否像可用的 base64 媒体数据（排除 VLM/ASR 占位文本）。"""
+
+    normalized = str(value or "").strip()
+    if len(normalized) < 16 or len(normalized) % 4 != 0:
+        return False
+    if normalized.startswith(("[", "http://", "https://", "data:")):
+        return False
+    try:
+        base64.b64decode(normalized, validate=True)
+        return True
+    except Exception:
+        return False
+
+
+def _extract_nested_media_segment(seg: dict) -> Optional[tuple[str, dict]]:
+    """从 ``dict`` 包装段中解析嵌套的图片/表情/语音段。"""
+
+    if str(seg.get("type", "")).strip().lower() != "dict":
+        return None
+    data = seg.get("data")
+    if not isinstance(data, dict):
+        return None
+    inner_type = str(data.get("type", "")).strip().lower()
+    if inner_type in {"image", "emoji", "voice", "record"}:
+        return inner_type, data
+    return None
 
 
 def _unwrap_message_payload(raw: Any) -> Optional[Dict[str, Any]]:
@@ -110,7 +144,24 @@ def _resolve_segment_binary_base64(seg: dict) -> str:
             return normalized[len("base64://") :]
         if normalized.startswith("data:") and ";base64," in normalized:
             return normalized.split(";base64,", 1)[1]
+        if _looks_like_base64(normalized):
+            return normalized
     return ""
+
+
+def _append_media_segment(entry: dict, store: KeywordsStore, seg_type: str, seg: dict) -> None:
+    """把单个媒体段写入 entry 对应列表。"""
+
+    normalized_type = "voice" if seg_type == "record" else seg_type
+    if normalized_type not in {"image", "emoji", "voice"}:
+        return
+    b64 = _resolve_segment_binary_base64(seg)
+    media_key = {"image": "images", "emoji": "emojis", "voice": "records"}[normalized_type]
+    if not b64:
+        return
+    filename = store.save_media_base64(media_key, b64)
+    if filename:
+        entry[media_key].append({"file": filename})
 
 
 def build_entry_from_segments(
@@ -143,24 +194,24 @@ def build_entry_from_segments(
                 nickname = str(data.get("target_user_nickname", "") or "")
                 if uid:
                     entry["ats"].append({"user_id": uid, "nickname": nickname, "all": uid.lower() == "all"})
-        elif seg_type in ("image", "emoji", "voice"):
-            b64 = _resolve_segment_binary_base64(seg)
-            media_key = {"image": "images", "emoji": "emojis", "voice": "records"}[seg_type]
-            if b64:
-                filename = store.save_media_base64(media_key, b64)
-                if filename:
-                    entry[media_key].append({"file": filename})
+        elif seg_type in ("image", "emoji", "voice", "record"):
+            _append_media_segment(entry, store, seg_type, seg)
         elif seg_type == "face":
             data = _segment_data(seg) or {}
             if isinstance(data, dict) and data.get("id") is not None:
                 entry["faces"].append({"id": data.get("id")})
         elif seg_type == "dict":
-            data = _segment_data(seg) or {}
-            if isinstance(data, dict) and str(data.get("type", "")).lower() == "face":
-                face_data = data.get("data", data)
-                face_id = face_data.get("id") if isinstance(face_data, dict) else None
-                if face_id is not None:
-                    entry["faces"].append({"id": face_id})
+            nested = _extract_nested_media_segment(seg)
+            if nested:
+                inner_type, inner_seg = nested
+                _append_media_segment(entry, store, inner_type, inner_seg)
+            else:
+                data = _segment_data(seg) or {}
+                if isinstance(data, dict) and str(data.get("type", "")).lower() == "face":
+                    face_data = data.get("data", data)
+                    face_id = face_data.get("id") if isinstance(face_data, dict) else None
+                    if face_id is not None:
+                        entry["faces"].append({"id": face_id})
 
     if include_text:
         entry["text"] = strip_auto_media_text("".join(text_parts).strip())
@@ -314,18 +365,31 @@ async def capture_media_from_trigger(ctx: Any, store: KeywordsStore, message: Di
     return empty
 
 
-async def capture_from_reply(ctx: Any, store: KeywordsStore, message: Dict[str, Any]) -> dict:
+async def capture_from_reply(
+    ctx: Any,
+    store: KeywordsStore,
+    message: Dict[str, Any],
+    *,
+    media_cache: Optional[Dict[str, dict]] = None,
+) -> dict:
     """从被引用消息中捕获完整内容（文本 + 媒体）。"""
 
     empty = store.empty_entry()
     target_id = _extract_reply_target_id(message)
     if not target_id:
         return empty
+
+    cached_entry = empty
+    if isinstance(media_cache, dict):
+        cached = media_cache.get(target_id)
+        if isinstance(cached, dict) and store.entry_has_payload(cached):
+            cached_entry = cached
+
     stream_id = str(message.get("session_id", "") or "").strip() if isinstance(message, dict) else ""
     segments = await _fetch_message_segments(ctx, target_id, stream_id)
-    if not segments:
-        return empty
-    return build_entry_from_segments(segments, store, include_text=True)
+    fetched_entry = build_entry_from_segments(segments, store, include_text=True) if segments else empty
+    merged = store.merge_entries(cached_entry, fetched_entry)
+    return sanitize_entry_text(merged, store)
 
 
 # ─── 发送段构建 ────────────────────────────────────────────────
