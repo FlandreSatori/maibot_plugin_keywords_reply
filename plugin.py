@@ -203,13 +203,19 @@ class KeywordsReplyPlugin(MaiBotPlugin):
         entry["text"] = plain.strip()
         entry["ats"].extend(inline_ats)
         message_id = str(message.get("message_id", "") or "").strip()
+        cached_media: Optional[dict] = None
         if message_id:
             cached = self._command_media_cache.pop(message_id, None)
             if isinstance(cached, dict) and self.store.entry_has_payload(cached):
-                entry = self.store.merge_entries(entry, cached)
-        trigger_media = await capture_media_from_trigger(self.ctx, self.store, message)
+                cached_media = cached
+
+        if cached_media:
+            entry = self.store.merge_entries(entry, cached_media)
+        else:
+            trigger_media = await capture_media_from_trigger(self.ctx, self.store, message)
+            entry = self.store.merge_entries(entry, trigger_media)
+
         reply_imported = await capture_from_reply(self.ctx, self.store, message)
-        entry = self.store.merge_entries(entry, trigger_media)
         entry = self.store.merge_entries(entry, reply_imported)
         return sanitize_entry_text(entry, self.store)
 

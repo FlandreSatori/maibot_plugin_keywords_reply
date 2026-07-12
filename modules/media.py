@@ -169,11 +169,54 @@ def build_entry_from_segments(
     return entry
 
 
+def dedupe_entry_ats(ats: List[dict]) -> List[dict]:
+    """按 user_id 去重 At，保留首次出现并尽量补齐 nickname。"""
+
+    merged: Dict[str, dict] = {}
+    order: List[str] = []
+    for at in ats or []:
+        if not isinstance(at, dict):
+            continue
+        if at.get("all"):
+            key = "__all__"
+        else:
+            key = str(at.get("user_id", "") or "").strip()
+        if not key:
+            continue
+        if key not in merged:
+            merged[key] = dict(at)
+            order.append(key)
+            continue
+        existing = merged[key]
+        if not str(existing.get("nickname", "") or "").strip() and str(at.get("nickname", "") or "").strip():
+            existing["nickname"] = at.get("nickname")
+    return [merged[key] for key in order]
+
+
+def strip_text_at_mentions(text: str, ats: List[dict]) -> str:
+    """当已保存真实 At 时，移除文本里重复的 ``@昵称`` 字面量。"""
+
+    cleaned = str(text or "")
+    if not cleaned or not ats:
+        return cleaned.strip()
+
+    for at in ats:
+        nickname = str(at.get("nickname", "") or "").strip()
+        if nickname:
+            cleaned = re.sub(rf"@{re.escape(nickname)}(?=\s|$|[，。！？,.!?])", "", cleaned)
+            cleaned = cleaned.replace(f"@{nickname}", "")
+    return re.sub(r"\s+", " ", cleaned).strip()
+
+
 def sanitize_entry_text(entry: dict, store: KeywordsStore) -> dict:
-    """若已捕获到富媒体，则移除 MaiBot 自动生成的占位描述文本。"""
+    """整理 entry：去重 At、剥离重复 @ 文本、移除 VLM 媒体占位描述。"""
 
     if not isinstance(entry, dict):
         return entry
+
+    entry["ats"] = dedupe_entry_ats(entry.get("ats") or [])
+    entry["text"] = strip_text_at_mentions(str(entry.get("text", "") or ""), entry["ats"])
+
     has_media = bool(entry.get("images") or entry.get("records") or entry.get("emojis"))
     if has_media:
         entry["text"] = strip_auto_media_text(str(entry.get("text", "") or ""))
@@ -306,12 +349,6 @@ def build_send_segments(
         if target_id:
             segments.append({"type": "reply", "data": {"target_message_id": target_id}})
 
-    text = entry.get("text") or ""
-    if text:
-        if render:
-            text = render_template_text(text, message, enabled=enable_template)
-        segments.append({"type": "text", "content": text})
-
     for at in entry.get("ats", []):
         uid = "all" if at.get("all") else str(at.get("user_id", "") or "")
         if uid:
@@ -321,6 +358,12 @@ def build_send_segments(
                     "data": {"target_user_id": uid, "target_user_nickname": str(at.get("nickname", "") or "")},
                 }
             )
+
+    text = entry.get("text") or ""
+    if text:
+        if render:
+            text = render_template_text(text, message, enabled=enable_template)
+        segments.append({"type": "text", "content": text})
 
     for face in entry.get("faces", []):
         segments.append({"type": "face", "data": {"id": face.get("id")}})
