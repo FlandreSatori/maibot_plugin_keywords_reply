@@ -14,8 +14,8 @@ from __future__ import annotations
 import re
 from typing import Any, Dict, List, Optional
 
-from maibot_sdk import Command, EventHandler, Field, MaiBotPlugin, PluginConfigBase
-from maibot_sdk.types import EventType
+from maibot_sdk import Command, EventHandler, Field, HookHandler, MaiBotPlugin, PluginConfigBase
+from maibot_sdk.types import EventType, HookMode, HookOrder
 
 from .modules.matching import (
     Matcher,
@@ -688,28 +688,29 @@ class KeywordsReplyPlugin(MaiBotPlugin):
     async def del_detect_reply(self, **kwargs: Any):
         return await self._cmd_delete_reply(SECTION_DETECT, kwargs)
 
-    # ─── 自动回复事件处理 ──────────────────────────────────────
+    # ─── 自动回复（Hook + EventHandler 双路径） ─────────────────
 
-    @EventHandler(
-        "keywords_auto_reply",
-        description="关键词/检测词自动回复",
-        event_type=EventType.ON_MESSAGE,
-        intercept_message=True,
-        weight=50,
-    )
-    async def handle_message(self, message: Any = None, **kwargs: Any):
-        if not isinstance(message, dict) or not self.config.plugin.enabled:
-            return {"continue_processing": True}
+    _MGMT_PREFIXES = ("/添加", "/编辑", "/删除", "/启用", "/禁用", "/查看")
+
+    async def _try_auto_reply(self, message: Dict[str, Any]) -> str:
+        """尝试匹配并发送自动回复。
+
+        Returns:
+            ``"keyword"``：命中关键词，应拦截后续主链；
+            ``"detect"``：命中检测词，已回复但不拦截；
+            ``"none"``：未命中。
+        """
+
+        if not self.config.plugin.enabled:
+            return "none"
 
         text = str(message.get("processed_plain_text", "") or "").strip()
         if not text:
-            return {"continue_processing": True}
+            return "none"
 
-        # 管理命令由 @Command 处理，避免与关键词/检测词自动回复重复触发。
-        if message.get("is_command") or any(
-            text.startswith(p) for p in ("/添加", "/编辑", "/删除", "/启用", "/禁用", "/查看")
-        ):
-            return {"continue_processing": True}
+        # 管理命令由 @Command 处理，避免与自动回复重复触发。
+        if message.get("is_command") or any(text.startswith(p) for p in self._MGMT_PREFIXES):
+            return "none"
 
         info = message.get("message_info", {}) if isinstance(message.get("message_info"), dict) else {}
         group_info = info.get("group_info") or {}
@@ -721,15 +722,57 @@ class KeywordsReplyPlugin(MaiBotPlugin):
             command_match = self.matcher.match_command(text, group_id)
             if command_match:
                 await self._dispatch_reply(stream_id, command_match, message)
-                return {"continue_processing": False}
+                return "keyword"
 
             detect_match = self.matcher.match_detect(text, group_id, session_id)
             if detect_match:
                 await self._dispatch_reply(stream_id, detect_match, message)
-                return {"continue_processing": True}
+                return "detect"
         except Exception as exc:
             self.ctx.logger.error(f"关键词自动回复处理失败: {exc}", exc_info=True)
 
+        return "none"
+
+    @HookHandler(
+        "chat.receive.after_process",
+        name="keywords_auto_reply_hook",
+        description="关键词/检测词自动回复（入站消息主链 Hook）",
+        mode=HookMode.BLOCKING,
+        order=HookOrder.NORMAL,
+    )
+    async def handle_receive_after_process(self, message: Any = None, **kwargs: Any):
+        """在入站消息预处理后触发自动回复。
+
+        当前 MaiBot 主链中 ``ON_MESSAGE`` 事件分发默认未启用，因此自动回复
+        必须挂在此 Hook 上才能实际生效。
+        """
+
+        del kwargs
+        if not isinstance(message, dict):
+            return {"action": "continue"}
+
+        result = await self._try_auto_reply(message)
+        if result == "keyword":
+            return {"action": "abort"}
+        return {"action": "continue"}
+
+    @EventHandler(
+        "keywords_auto_reply",
+        description="关键词/检测词自动回复（ON_MESSAGE 备用路径）",
+        event_type=EventType.ON_MESSAGE,
+        intercept_message=True,
+        weight=50,
+    )
+    async def handle_message(self, message: Any = None, **kwargs: Any):
+        """当宿主重新启用 ON_MESSAGE 事件分发时的备用处理器。"""
+
+        del kwargs
+        if not isinstance(message, dict):
+            return {"continue_processing": True}
+
+        result = await self._try_auto_reply(message)
+        if result == "keyword":
+            return {"continue_processing": False}
         return {"continue_processing": True}
 
 

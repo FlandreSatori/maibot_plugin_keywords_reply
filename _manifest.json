@@ -1,6 +1,6 @@
 {
   "manifest_version": 2,
-  "version": "1.0.0",
+  "version": "1.0.1",
   "name": "关键词回复",
   "description": "关键词/检测词自动回复插件，支持指令触发与自动监听、正则匹配、图文/At/表情/语音富媒体回复、群聊黑白名单与变量模板。由 AstrBot 同名插件迁移而来。",
   "author": {
@@ -9,9 +9,9 @@
   },
   "license": "AGPL-3.0-or-later",
   "urls": {
-    "repository": "https://github.com/Foolllll-J/astrbot_plugin_keywords_reply",
-    "homepage": "https://github.com/Foolllll-J/astrbot_plugin_keywords_reply",
-    "issues": "https://github.com/Foolllll-J/astrbot_plugin_keywords_reply/issues"
+    "repository": "https://github.com/FlandreSatori/maibot_plugin_keywords_reply",
+    "homepage": "https://github.com/FlandreSatori/maibot_plugin_keywords_reply",
+    "issues": "https://github.com/FlandreSatori/maibot_plugin_keywords_reply/issues"
   },
   "changelog": "CHANGELOG.md",
   "host_application": {

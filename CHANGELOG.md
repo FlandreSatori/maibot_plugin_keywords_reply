@@ -1,5 +1,9 @@
 # 更新日志
 
+## 1.0.1
+
+- 修复自动回复不生效：MaiBot 主链默认未启用 `ON_MESSAGE` 事件，自动回复改挂 `chat.receive.after_process` Hook；保留 `ON_MESSAGE` 处理器作兼容备用。
+
 ## 1.0.0
 
 - 从 AstrBot 插件 `astrbot_plugin_keywords_reply` 迁移到 MaiBot SDK 2.x。
