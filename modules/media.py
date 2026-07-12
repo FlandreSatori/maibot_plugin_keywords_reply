@@ -25,7 +25,7 @@ from urllib import request as urllib_request
 from .store import KeywordsStore
 from .templates import render_template_text, strip_auto_media_text
 
-logger = logging.getLogger("plugin.foolllll.keywords-reply")
+logger = logging.getLogger("plugin.maibot_plugin.keywords_reply")
 
 _MENTION_PATTERN = re.compile(r"\[@\s*(\d+)\]")
 _ONEBOT_MUSIC_PLATFORMS = frozenset({"163", "qq", "migu", "kugou", "kuwo"})

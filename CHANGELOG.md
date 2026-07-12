@@ -1,5 +1,9 @@
 # 更新日志
 
+## 1.0.11
+
+- 插件 ID 改为 `maibot_plugin.keywords_reply`，数据目录同步为 `data/plugins/maibot_plugin.keywords_reply/`（原为 `foolllll.keywords-reply`）。升级后请手动迁移旧数据目录。
+
 ## 1.0.10
 
 - 新增 `/添加音乐 <关键词> <歌曲ID> [平台]` 命令，可直接用 NapCat 解析出的歌曲 ID 创建音乐卡片关键词回复；平台默认为 `163`（网易云）。

@@ -46,7 +46,7 @@ import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-logger = logging.getLogger("plugin.foolllll.keywords-reply")
+logger = logging.getLogger("plugin.maibot_plugin.keywords_reply")
 
 SECTIONS = ("command_triggered", "auto_detect")
 

@@ -8,7 +8,7 @@
 - **群聊黑白名单**：每个词条可独立设置在哪些群启用/禁用，或全局生效。
 - **变量模板**：回复文本支持 `{user_id}`、`{user_name}`、`{group_id}`、`{platform}`、`{message}`、`{date}`、`{time}`、`{datetime}` 等占位符。
 - **检测冷却**：检测词可设置触发冷却，防止刷屏。
-- **数据可外部编辑**：所有词条保存在插件数据目录下的 `keywords.json`，媒体以文件形式存放于 `images/`、`records/`、`emojis/`。
+- **数据可外部编辑**：所有词条保存在 MaiBot 数据目录 `data/plugins/maibot_plugin.keywords_reply/keywords.json`，媒体以文件形式存放于同目录下的 `images/`、`records/`、`emojis/`。该路径由 `_manifest.json` 的 `id` 决定，与插件源码目录名 `maibot_plugin_keywords_reply` 对应（MaiBot 要求 ID 含 `.` 分隔符）。
 
 > 权限说明：只有 `permission.whitelist` 中的用户，或全局配置 `plugin.permission` 中的管理员，才能执行管理命令。白名单支持 `user_id` 或 `platform:user_id` 两种写法。
 

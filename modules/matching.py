@@ -16,7 +16,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from .store import KeywordsStore
 
-logger = logging.getLogger("plugin.foolllll.keywords-reply")
+logger = logging.getLogger("plugin.maibot_plugin.keywords_reply")
 
 
 class Matcher:
