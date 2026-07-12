@@ -1134,6 +1134,19 @@ function batchUpdate(mutator) {
   refreshList();
 }
 
+function selectAllRules() {
+  const rules = getRules();
+  if (!rules.length) {
+    setStatus("当前分类下没有词条");
+    return;
+  }
+  for (let index = 0; index < rules.length; index += 1) {
+    state.selected.add(index);
+  }
+  queueRender();
+  setStatus(`已全选 ${rules.length} 条词条`);
+}
+
 function bindEvents() {
   document.querySelectorAll(".tab").forEach((btn) => {
     btn.addEventListener("click", () => {
@@ -1226,6 +1239,7 @@ function bindEvents() {
   bindEscapeClose(closeRuleModal, "ruleModal");
 
   $("btnBatchGroup").addEventListener("click", openBatchGroupModal);
+  $("btnSelectAll").addEventListener("click", selectAllRules);
   $("btnBatchGroupCancel").addEventListener("click", closeBatchGroupModal);
   $("btnBatchGroupClose").addEventListener("click", closeBatchGroupModal);
   $("btnBatchGroupSave").addEventListener("click", applyBatchGroup);
