@@ -8,6 +8,19 @@ from typing import Any, Dict
 
 _TEMPLATE_PATTERN = re.compile(r"\{([a-zA-Z_][a-zA-Z0-9_]*)\}")
 
+# MaiBot 入站预处理会把图片/表情/语音转成可读占位文本，不应作为关键词回复的正文保存。
+_AUTO_MEDIA_TEXT_PATTERN = re.compile(
+    r"\[(?:"
+    r"图片[：:][^\]]*"
+    r"|图片(?:\s*x\d+)?"
+    r"|图片，识别中\.\.\.\.\.\."
+    r"|表情包[：:][^\]]*"
+    r"|表情包"
+    r"|语音[：:][^\]]*"
+    r"|语音消息[^\]]*"
+    r")\]"
+)
+
 # 危险正则片段，用于粗略防止 ReDoS
 _DANGEROUS_REGEX_PATTERNS = [
     r"\(\?\:",
@@ -50,6 +63,15 @@ def render_template_text(text: str, message: Dict[str, Any], enabled: bool = Tru
         return text
     context = build_template_context(message)
     return _TEMPLATE_PATTERN.sub(lambda m: context.get(m.group(1), m.group(0)), text)
+
+
+def strip_auto_media_text(text: str) -> str:
+    """移除 MaiBot 自动生成的图片/表情/语音占位描述。"""
+
+    if not text:
+        return ""
+    cleaned = _AUTO_MEDIA_TEXT_PATTERN.sub("", text)
+    return re.sub(r"\s+", " ", cleaned).strip()
 
 
 def is_safe_regex(pattern: str) -> bool:

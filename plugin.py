@@ -28,11 +28,14 @@ from .modules.media import (
     build_forward_messages,
     build_send_segments,
     capture_from_reply,
+    capture_media_from_message_dict,
     capture_media_from_trigger,
     extract_inline_ats,
+    is_management_command_message,
+    sanitize_entry_text,
 )
 from .modules.store import KeywordsStore
-from .modules.templates import is_safe_regex
+from .modules.templates import is_safe_regex, strip_auto_media_text
 
 SECTION_KEYWORD = "command_triggered"
 SECTION_DETECT = "auto_detect"
@@ -122,6 +125,7 @@ class KeywordsReplyPlugin(MaiBotPlugin):
         self.store = KeywordsStore(self.ctx.paths.data_dir)
         self.store.setup()
         self.matcher = Matcher(self.store, self._settings)
+        self._command_media_cache: Dict[str, dict] = {}
         self.ctx.logger.info(
             "关键词回复插件已加载：关键词 %d 条，检测词 %d 条",
             len(self.store.data.get(SECTION_KEYWORD, [])),
@@ -129,7 +133,7 @@ class KeywordsReplyPlugin(MaiBotPlugin):
         )
 
     async def on_unload(self) -> None:
-        pass
+        self._command_media_cache.clear()
 
     async def on_config_update(self, scope: str, config_data: dict, version: str) -> None:
         del scope, config_data, version
@@ -195,14 +199,19 @@ class KeywordsReplyPlugin(MaiBotPlugin):
         """从命令正文 + 触发消息媒体 + 引用消息内容构建一条 entry。"""
 
         entry = self.store.empty_entry()
-        plain, inline_ats = extract_inline_ats(content or "")
+        plain, inline_ats = extract_inline_ats(strip_auto_media_text(content or ""))
         entry["text"] = plain.strip()
         entry["ats"].extend(inline_ats)
+        message_id = str(message.get("message_id", "") or "").strip()
+        if message_id:
+            cached = self._command_media_cache.pop(message_id, None)
+            if isinstance(cached, dict) and self.store.entry_has_payload(cached):
+                entry = self.store.merge_entries(entry, cached)
         trigger_media = await capture_media_from_trigger(self.ctx, self.store, message)
         reply_imported = await capture_from_reply(self.ctx, self.store, message)
         entry = self.store.merge_entries(entry, trigger_media)
         entry = self.store.merge_entries(entry, reply_imported)
-        return entry
+        return sanitize_entry_text(entry, self.store)
 
     async def _dispatch_reply(self, stream_id: str, match: dict, message: Dict[str, Any]) -> None:
         """把命中的回复发送到聊天流。"""
@@ -263,6 +272,8 @@ class KeywordsReplyPlugin(MaiBotPlugin):
         else:
             keyword = args
             reply_text = ""
+        keyword = strip_auto_media_text(keyword)
+        reply_text = strip_auto_media_text(reply_text)
         if not keyword:
             return await self._send(stream_id, f"{label}不能为空。")
 
@@ -598,99 +609,126 @@ class KeywordsReplyPlugin(MaiBotPlugin):
 
     # ─── 关键词命令（command_triggered） ─────────────────────────
 
-    @Command("kr_add_keyword", description="添加关键词", pattern=r"^/添加关键词(?:\s+(?P<args>[\s\S]+))?$")
+    @Command("kr_add_keyword", description="添加关键词", pattern=r"/添加关键词(?:\s+(?P<args>[\s\S]+))?$")
     async def add_keyword(self, **kwargs: Any):
         return await self._cmd_add(SECTION_KEYWORD, kwargs)
 
-    @Command("kr_edit_keyword", description="编辑关键词", pattern=r"^/编辑关键词(?:\s+(?P<args>[\s\S]+))?$")
+    @Command("kr_edit_keyword", description="编辑关键词", pattern=r"/编辑关键词(?:\s+(?P<args>[\s\S]+))?$")
     async def edit_keyword(self, **kwargs: Any):
         return await self._cmd_edit(SECTION_KEYWORD, kwargs)
 
-    @Command("kr_del_keyword", description="删除关键词", pattern=r"^/删除关键词(?:\s+(?P<args>[\s\S]+))?$")
+    @Command("kr_del_keyword", description="删除关键词", pattern=r"/删除关键词(?:\s+(?P<args>[\s\S]+))?$")
     async def del_keyword(self, **kwargs: Any):
         return await self._cmd_delete(SECTION_KEYWORD, kwargs)
 
-    @Command("kr_enable_keyword", description="启用关键词", pattern=r"^/启用关键词(?:\s+(?P<args>[\s\S]+))?$")
+    @Command("kr_enable_keyword", description="启用关键词", pattern=r"/启用关键词(?:\s+(?P<args>[\s\S]+))?$")
     async def enable_keyword(self, **kwargs: Any):
         return await self._cmd_toggle(SECTION_KEYWORD, True, kwargs)
 
-    @Command("kr_disable_keyword", description="禁用关键词", pattern=r"^/禁用关键词(?:\s+(?P<args>[\s\S]+))?$")
+    @Command("kr_disable_keyword", description="禁用关键词", pattern=r"/禁用关键词(?:\s+(?P<args>[\s\S]+))?$")
     async def disable_keyword(self, **kwargs: Any):
         return await self._cmd_toggle(SECTION_KEYWORD, False, kwargs)
 
-    @Command("kr_list_keywords", description="查看关键词列表", pattern=r"^/查看(?:关键词列表|所有关键词)$")
+    @Command("kr_list_keywords", description="查看关键词列表", pattern=r"/查看(?:关键词列表|所有关键词)$")
     async def list_keywords(self, **kwargs: Any):
         return await self._cmd_list(SECTION_KEYWORD, kwargs)
 
-    @Command("kr_view_keyword_reply", description="查看关键词回复", pattern=r"^/查看关键词回复(?:\s+(?P<args>[\s\S]+))?$")
+    @Command("kr_view_keyword_reply", description="查看关键词回复", pattern=r"/查看关键词回复(?:\s+(?P<args>[\s\S]+))?$")
     async def view_keyword_reply(self, **kwargs: Any):
         return await self._cmd_view_reply(SECTION_KEYWORD, kwargs)
 
-    @Command("kr_view_keyword", description="查看关键词", pattern=r"^/查看关键词(?:\s+(?P<args>[\s\S]+))?$")
+    @Command("kr_view_keyword", description="查看关键词", pattern=r"/查看关键词(?:\s+(?P<args>[\s\S]+))?$")
     async def view_keyword(self, **kwargs: Any):
         return await self._cmd_view(SECTION_KEYWORD, kwargs)
 
-    @Command("kr_add_keyword_reply", description="添加关键词回复", pattern=r"^/添加关键词回复(?:\s+(?P<args>[\s\S]+))?$")
+    @Command("kr_add_keyword_reply", description="添加关键词回复", pattern=r"/添加关键词回复(?:\s+(?P<args>[\s\S]+))?$")
     async def add_keyword_reply(self, **kwargs: Any):
         return await self._cmd_add_reply(SECTION_KEYWORD, kwargs)
 
-    @Command("kr_edit_keyword_reply", description="编辑关键词回复", pattern=r"^/编辑关键词回复(?:\s+(?P<args>[\s\S]+))?$")
+    @Command("kr_edit_keyword_reply", description="编辑关键词回复", pattern=r"/编辑关键词回复(?:\s+(?P<args>[\s\S]+))?$")
     async def edit_keyword_reply(self, **kwargs: Any):
         return await self._cmd_edit_reply(SECTION_KEYWORD, kwargs)
 
-    @Command("kr_del_keyword_reply", description="删除关键词回复", pattern=r"^/删除关键词回复(?:\s+(?P<args>[\s\S]+))?$")
+    @Command("kr_del_keyword_reply", description="删除关键词回复", pattern=r"/删除关键词回复(?:\s+(?P<args>[\s\S]+))?$")
     async def del_keyword_reply(self, **kwargs: Any):
         return await self._cmd_delete_reply(SECTION_KEYWORD, kwargs)
 
     # ─── 检测词命令（auto_detect） ───────────────────────────────
 
-    @Command("kr_add_detect", description="添加检测词", pattern=r"^/添加检测词(?:\s+(?P<args>[\s\S]+))?$")
+    @Command("kr_add_detect", description="添加检测词", pattern=r"/添加检测词(?:\s+(?P<args>[\s\S]+))?$")
     async def add_detect(self, **kwargs: Any):
         return await self._cmd_add(SECTION_DETECT, kwargs)
 
-    @Command("kr_edit_detect", description="编辑检测词", pattern=r"^/编辑检测词(?:\s+(?P<args>[\s\S]+))?$")
+    @Command("kr_edit_detect", description="编辑检测词", pattern=r"/编辑检测词(?:\s+(?P<args>[\s\S]+))?$")
     async def edit_detect(self, **kwargs: Any):
         return await self._cmd_edit(SECTION_DETECT, kwargs)
 
-    @Command("kr_del_detect", description="删除检测词", pattern=r"^/删除检测词(?:\s+(?P<args>[\s\S]+))?$")
+    @Command("kr_del_detect", description="删除检测词", pattern=r"/删除检测词(?:\s+(?P<args>[\s\S]+))?$")
     async def del_detect(self, **kwargs: Any):
         return await self._cmd_delete(SECTION_DETECT, kwargs)
 
-    @Command("kr_enable_detect", description="启用检测词", pattern=r"^/启用检测词(?:\s+(?P<args>[\s\S]+))?$")
+    @Command("kr_enable_detect", description="启用检测词", pattern=r"/启用检测词(?:\s+(?P<args>[\s\S]+))?$")
     async def enable_detect(self, **kwargs: Any):
         return await self._cmd_toggle(SECTION_DETECT, True, kwargs)
 
-    @Command("kr_disable_detect", description="禁用检测词", pattern=r"^/禁用检测词(?:\s+(?P<args>[\s\S]+))?$")
+    @Command("kr_disable_detect", description="禁用检测词", pattern=r"/禁用检测词(?:\s+(?P<args>[\s\S]+))?$")
     async def disable_detect(self, **kwargs: Any):
         return await self._cmd_toggle(SECTION_DETECT, False, kwargs)
 
-    @Command("kr_list_detects", description="查看检测词列表", pattern=r"^/查看(?:检测词列表|所有检测词)$")
+    @Command("kr_list_detects", description="查看检测词列表", pattern=r"/查看(?:检测词列表|所有检测词)$")
     async def list_detects(self, **kwargs: Any):
         return await self._cmd_list(SECTION_DETECT, kwargs)
 
-    @Command("kr_view_detect_reply", description="查看检测词回复", pattern=r"^/查看检测词回复(?:\s+(?P<args>[\s\S]+))?$")
+    @Command("kr_view_detect_reply", description="查看检测词回复", pattern=r"/查看检测词回复(?:\s+(?P<args>[\s\S]+))?$")
     async def view_detect_reply(self, **kwargs: Any):
         return await self._cmd_view_reply(SECTION_DETECT, kwargs)
 
-    @Command("kr_view_detect", description="查看检测词", pattern=r"^/查看检测词(?:\s+(?P<args>[\s\S]+))?$")
+    @Command("kr_view_detect", description="查看检测词", pattern=r"/查看检测词(?:\s+(?P<args>[\s\S]+))?$")
     async def view_detect(self, **kwargs: Any):
         return await self._cmd_view(SECTION_DETECT, kwargs)
 
-    @Command("kr_add_detect_reply", description="添加检测词回复", pattern=r"^/添加检测词回复(?:\s+(?P<args>[\s\S]+))?$")
+    @Command("kr_add_detect_reply", description="添加检测词回复", pattern=r"/添加检测词回复(?:\s+(?P<args>[\s\S]+))?$")
     async def add_detect_reply(self, **kwargs: Any):
         return await self._cmd_add_reply(SECTION_DETECT, kwargs)
 
-    @Command("kr_edit_detect_reply", description="编辑检测词回复", pattern=r"^/编辑检测词回复(?:\s+(?P<args>[\s\S]+))?$")
+    @Command("kr_edit_detect_reply", description="编辑检测词回复", pattern=r"/编辑检测词回复(?:\s+(?P<args>[\s\S]+))?$")
     async def edit_detect_reply(self, **kwargs: Any):
         return await self._cmd_edit_reply(SECTION_DETECT, kwargs)
 
-    @Command("kr_del_detect_reply", description="删除检测词回复", pattern=r"^/删除检测词回复(?:\s+(?P<args>[\s\S]+))?$")
+    @Command("kr_del_detect_reply", description="删除检测词回复", pattern=r"/删除检测词回复(?:\s+(?P<args>[\s\S]+))?$")
     async def del_detect_reply(self, **kwargs: Any):
         return await self._cmd_delete_reply(SECTION_DETECT, kwargs)
 
     # ─── 自动回复（Hook + EventHandler 双路径） ─────────────────
 
     _MGMT_PREFIXES = ("/添加", "/编辑", "/删除", "/启用", "/禁用", "/查看")
+
+    @HookHandler(
+        "chat.receive.before_process",
+        name="keywords_capture_command_media",
+        description="在 VLM 识图前缓存管理命令消息中的富媒体二进制",
+        mode=HookMode.BLOCKING,
+        order=HookOrder.NORMAL,
+    )
+    async def capture_command_media_before_process(self, message: Any = None, **kwargs: Any):
+        """``message.process()`` 会清空图片二进制并生成 ``[图片：...]`` 描述。
+
+        无法修改 MaiBot 主程序时，只能在此 Hook（位于 process 之前）抢先缓存媒体。
+        """
+
+        del kwargs
+        if not isinstance(message, dict) or not is_management_command_message(message):
+            return {"action": "continue"}
+
+        message_id = str(message.get("message_id", "") or "").strip()
+        if not message_id:
+            return {"action": "continue"}
+
+        cached = capture_media_from_message_dict(message, self.store)
+        if self.store.entry_has_payload(cached):
+            self._command_media_cache[message_id] = cached
+            self.ctx.logger.debug(f"已缓存管理命令消息媒体: message_id={message_id}")
+        return {"action": "continue"}
 
     async def _try_auto_reply(self, message: Dict[str, Any]) -> str:
         """尝试匹配并发送自动回复。

@@ -23,11 +23,14 @@ from typing import Any, Dict, List, Optional
 from urllib import request as urllib_request
 
 from .store import KeywordsStore
-from .templates import render_template_text
+from .templates import render_template_text, strip_auto_media_text
 
 logger = logging.getLogger("plugin.foolllll.keywords-reply")
 
 _MENTION_PATTERN = re.compile(r"\[@\s*(\d+)\]")
+_MGMT_COMMAND_PATTERN = re.compile(
+    r"/(?:添加|编辑|删除|启用|禁用|查看)(?:关键词|检测词)(?:回复)?(?:\s|$)"
+)
 
 
 def extract_inline_ats(text: str) -> tuple[str, List[dict]]:
@@ -160,7 +163,20 @@ def build_entry_from_segments(
                     entry["faces"].append({"id": face_id})
 
     if include_text:
-        entry["text"] = "".join(text_parts).strip()
+        entry["text"] = strip_auto_media_text("".join(text_parts).strip())
+    else:
+        entry["text"] = ""
+    return entry
+
+
+def sanitize_entry_text(entry: dict, store: KeywordsStore) -> dict:
+    """若已捕获到富媒体，则移除 MaiBot 自动生成的占位描述文本。"""
+
+    if not isinstance(entry, dict):
+        return entry
+    has_media = bool(entry.get("images") or entry.get("records") or entry.get("emojis"))
+    if has_media:
+        entry["text"] = strip_auto_media_text(str(entry.get("text", "") or ""))
     return entry
 
 
@@ -200,6 +216,36 @@ async def _fetch_message_segments(ctx: Any, message_id: str, stream_id: str) -> 
         logger.warning(f"get_by_id 失败: message_id={message_id}, error={exc}")
         return []
     return _segments_of(raw)
+
+
+def extract_management_command_text(message: Dict[str, Any]) -> str:
+    """从入站消息原始段提取管理命令文本（不依赖 ``processed_plain_text``）。"""
+
+    if not isinstance(message, dict):
+        return ""
+    parts: List[str] = []
+    for seg in message.get("raw_message", []) or []:
+        if not isinstance(seg, dict) or str(seg.get("type", "")).strip().lower() != "text":
+            continue
+        text = str(seg.get("data", "") or "").strip()
+        if text:
+            parts.append(text)
+    return " ".join(parts).strip()
+
+
+def is_management_command_message(message: Dict[str, Any]) -> bool:
+    """判断消息是否包含本插件的管理命令。"""
+
+    text = extract_management_command_text(message)
+    return bool(text and _MGMT_COMMAND_PATTERN.search(text))
+
+
+def capture_media_from_message_dict(message: Dict[str, Any], store: KeywordsStore) -> dict:
+    """从序列化消息字典捕获富媒体（用于 ``before_process`` 阶段，二进制尚未被主程序丢弃）。"""
+
+    if not isinstance(message, dict):
+        return store.empty_entry()
+    return build_entry_from_segments(message.get("raw_message", []) or [], store, include_text=False)
 
 
 async def capture_media_from_trigger(ctx: Any, store: KeywordsStore, message: Dict[str, Any]) -> dict:
