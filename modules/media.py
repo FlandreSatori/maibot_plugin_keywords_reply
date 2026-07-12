@@ -575,6 +575,83 @@ async def capture_from_reply(
 # ─── 发送段构建 ────────────────────────────────────────────────
 
 
+def _append_reply_segment(segments: List[dict], message: Dict[str, Any]) -> None:
+    if not isinstance(message, dict):
+        return
+    target_id = str(message.get("message_id", "") or "").strip()
+    if target_id:
+        segments.append({"type": "reply", "data": {"target_message_id": target_id}})
+
+
+def _part_to_segments(
+    part: dict,
+    store: KeywordsStore,
+    message: Dict[str, Any],
+    *,
+    enable_template: bool = True,
+    render: bool = True,
+) -> List[dict]:
+    """把单个有序 part 转换为消息段列表。"""
+
+    if not isinstance(part, dict):
+        return []
+
+    part_type = str(part.get("type") or "").strip().lower()
+    segments: List[dict] = []
+
+    if part_type == "text":
+        text = str(part.get("text") or "")
+        if text.strip():
+            if render:
+                text = render_template_text(text, message, enabled=enable_template)
+            segments.append({"type": "text", "content": text})
+        return segments
+
+    if part_type == "at":
+        uid = "all" if part.get("all") else str(part.get("user_id", "") or "")
+        if uid:
+            segments.append(
+                {
+                    "type": "at",
+                    "data": {
+                        "target_user_id": uid,
+                        "target_user_nickname": str(part.get("nickname", "") or ""),
+                    },
+                }
+            )
+        return segments
+
+    if part_type == "face" and part.get("id") is not None:
+        segments.append({"type": "face", "data": {"id": part.get("id")}})
+        return segments
+
+    if part_type == "music":
+        music_segment = _build_music_send_segment(
+            {
+                "platform": part.get("platform"),
+                "id": part.get("id"),
+                "title": part.get("title", ""),
+                "artist": part.get("artist", ""),
+            }
+        )
+        if music_segment:
+            segments.append(music_segment)
+        return segments
+
+    media_key = {
+        "image": "images",
+        "emoji": "emojis",
+        "voice": "records",
+        "record": "records",
+    }.get(part_type)
+    if media_key:
+        b64 = store.read_media_base64(media_key, str(part.get("file") or ""))
+        if b64:
+            segment_type = "voice" if part_type in {"voice", "record"} else part_type
+            segments.append({"type": segment_type, "content": b64})
+    return segments
+
+
 def build_send_segments(
     entry: dict,
     store: KeywordsStore,
@@ -584,14 +661,25 @@ def build_send_segments(
     enable_template: bool = True,
     render: bool = True,
 ) -> List[dict]:
-    """把一条 entry 转换为 ctx.send.hybrid 使用的消息段列表。"""
+    """把一条 entry 转换为 ctx.send.hybrid 使用的消息段列表（单条消息）。"""
 
     segments: List[dict] = []
+    if quote:
+        _append_reply_segment(segments, message)
 
-    if quote and isinstance(message, dict):
-        target_id = str(message.get("message_id", "") or "").strip()
-        if target_id:
-            segments.append({"type": "reply", "data": {"target_message_id": target_id}})
+    parts = store.get_ordered_parts(entry)
+    if parts:
+        for part in parts:
+            segments.extend(
+                _part_to_segments(
+                    part,
+                    store,
+                    message,
+                    enable_template=enable_template,
+                    render=render,
+                )
+            )
+        return segments
 
     for at in entry.get("ats", []):
         uid = "all" if at.get("all") else str(at.get("user_id", "") or "")
@@ -633,6 +721,49 @@ def build_send_segments(
             segments.append({"type": "voice", "content": b64})
 
     return segments
+
+
+def build_ordered_send_batches(
+    entry: dict,
+    store: KeywordsStore,
+    message: Dict[str, Any],
+    *,
+    quote: bool = False,
+    enable_template: bool = True,
+    render: bool = True,
+) -> List[List[dict]]:
+    """把 entry 拆成按顺序逐条发送的 hybrid 批次（每批对应一条聊天消息）。"""
+
+    if not store.uses_ordered_parts(entry):
+        segments = build_send_segments(
+            entry,
+            store,
+            message,
+            quote=quote,
+            enable_template=enable_template,
+            render=render,
+        )
+        return [segments] if segments else []
+
+    batches: List[List[dict]] = []
+    for index, part in enumerate(entry.get("parts", [])):
+        if not isinstance(part, dict) or not KeywordsStore._part_has_payload(part):
+            continue
+        segments: List[dict] = []
+        if quote and index == 0:
+            _append_reply_segment(segments, message)
+        segments.extend(
+            _part_to_segments(
+                part,
+                store,
+                message,
+                enable_template=enable_template,
+                render=render,
+            )
+        )
+        if segments:
+            batches.append(segments)
+    return batches
 
 
 def build_forward_messages(

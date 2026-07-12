@@ -1,5 +1,11 @@
 # 更新日志
 
+## 1.1.0
+
+- 词条新增 `require_at_bot`（需 @ 机器人才触发）与回复 `weight`（多回复按权重抽取）。
+- 新增命令：`/设置关键词需@`、`/设置关键词权重`（检测词同理）、`/重载词库`。
+- 新增外部词库编辑器 `editor/`（总览、筛选、搜索、批量增删改）。
+
 ## 1.0.11
 
 - 插件 ID 改为 `maibot_plugin.keywords_reply`，数据目录同步为 `data/plugins/maibot_plugin.keywords_reply/`（原为 `foolllll.keywords-reply`）。升级后请手动迁移旧数据目录。

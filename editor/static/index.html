@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>关键词回复 · 词库编辑器</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <header>
+    <div>
+      <h1>关键词回复 · 词库编辑器</h1>
+      <div class="meta" id="pathMeta">正在连接…</div>
+    </div>
+    <div class="toolbar">
+      <button id="btnReload" class="secondary">重新加载</button>
+      <button id="btnSave">保存到磁盘</button>
+      <button id="btnExport" class="secondary">导出 JSON</button>
+      <label class="secondary import-label">
+        导入 JSON
+        <input id="importFile" type="file" accept="application/json,.json" hidden />
+      </label>
+    </div>
+  </header>
+
+  <main>
+    <aside>
+      <div class="tabs">
+        <button class="tab active" data-section="command_triggered">关键词</button>
+        <button class="tab" data-section="auto_detect">检测词</button>
+      </div>
+      <div class="stats">
+        <div class="stat"><strong id="statTotal">0</strong><span>筛选结果</span></div>
+        <div class="stat"><strong id="statSelected">0</strong><span>已选中</span></div>
+      </div>
+      <h2>筛选</h2>
+      <label>搜索（触发词 / 回复文本）</label>
+      <input id="filterSearch" placeholder="输入关键字…" />
+      <label>启用状态</label>
+      <select id="filterEnabled">
+        <option value="all">全部</option>
+        <option value="enabled">仅启用</option>
+        <option value="disabled">仅禁用</option>
+      </select>
+      <label>需@机器人</label>
+      <select id="filterRequireAt">
+        <option value="all">全部</option>
+        <option value="yes">需要 @</option>
+        <option value="no">不需要 @</option>
+      </select>
+      <label>正则</label>
+      <select id="filterRegex">
+        <option value="all">全部</option>
+        <option value="yes">正则</option>
+        <option value="no">非正则</option>
+      </select>
+      <label>群号（白/黑名单包含）</label>
+      <input id="filterGroup" placeholder="例如 673486917" />
+    </aside>
+
+    <section class="content">
+      <div class="batch-bar">
+        <button id="btnAddRule">新建词条</button>
+        <button id="btnBatchGroup" class="secondary">批量群策略</button>
+        <button id="btnBatchEnable" class="secondary">批量启用</button>
+        <button id="btnBatchDisable" class="secondary">批量禁用</button>
+        <button id="btnBatchRequireAtOn" class="secondary">批量需@开</button>
+        <button id="btnBatchRequireAtOff" class="secondary">批量需@关</button>
+        <button id="btnBatchDelete" class="danger">批量删除</button>
+      </div>
+      <div class="status-bar" id="statusBar"></div>
+      <div class="pagination-bar">
+        <label>每页</label>
+        <select id="pageSize">
+          <option value="30">30</option>
+          <option value="50" selected>50</option>
+          <option value="100">100</option>
+          <option value="200">200</option>
+        </select>
+        <button type="button" class="secondary" id="btnPrevPage">上一页</button>
+        <span id="pageInfo">第 1 / 1 页</span>
+        <button type="button" class="secondary" id="btnNextPage">下一页</button>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th><input type="checkbox" id="checkAll" /></th>
+              <th>触发词</th>
+              <th>状态</th>
+              <th>群策略</th>
+              <th>回复</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody id="ruleTableBody"></tbody>
+        </table>
+      </div>
+      <div class="empty" id="emptyState" hidden>没有匹配的词条</div>
+    </section>
+  </main>
+
+  <div class="modal-backdrop" id="ruleModal">
+    <div class="modal modal-wide modal-sticky-actions" role="dialog" aria-modal="true">
+      <div class="modal-header">
+        <h3 id="ruleModalTitle">编辑词条</h3>
+        <button type="button" class="secondary modal-close" id="btnRuleClose" aria-label="关闭">×</button>
+      </div>
+      <div class="modal-body">
+        <input type="hidden" id="ruleEditIndex" value="-1" />
+
+        <div class="form-grid">
+          <div>
+            <label>触发词</label>
+            <input id="ruleKeyword" />
+          </div>
+          <div class="checkbox-row">
+            <label><input type="checkbox" id="ruleEnabled" checked /> 启用</label>
+            <label><input type="checkbox" id="ruleRegex" /> 正则</label>
+            <label><input type="checkbox" id="ruleRequireAt" /> 需@机器人</label>
+          </div>
+          <div>
+            <label>群策略模式</label>
+            <select id="ruleMode">
+              <option value="whitelist">白名单</option>
+              <option value="blacklist">黑名单</option>
+            </select>
+          </div>
+          <div>
+            <label>群号列表（逗号分隔）</label>
+            <input id="ruleGroups" placeholder="123456,789012" />
+          </div>
+        </div>
+
+        <div class="reply-section">
+          <div class="reply-section-head">
+            <h4>回复列表</h4>
+            <div class="reply-section-tools">
+              <select id="entryFilterReplyType" title="筛选本条关键词下的回复">
+                <option value="all">全部回复</option>
+                <option value="text">含文本</option>
+                <option value="image">含图片</option>
+                <option value="voice">含语音</option>
+                <option value="emoji">含表情</option>
+                <option value="music">含音乐</option>
+              </select>
+              <button type="button" class="secondary" id="btnAddReplyRow">添加回复</button>
+              <button type="button" class="danger" id="btnDeleteReplyRows" disabled>删除选中</button>
+            </div>
+          </div>
+          <div class="reply-rows-head">
+            <span class="head-rail">权重/概率</span>
+            <span>排序</span>
+            <span>类型</span>
+            <span>内容</span>
+            <span class="head-actions">操作</span>
+          </div>
+          <div id="replyRows"></div>
+          <div class="reply-pagination" id="replyPagination" hidden>
+            <button type="button" class="secondary" id="btnReplyPrev">上一页</button>
+            <span id="replyPageInfo">第 1 / 1 页</span>
+            <button type="button" class="secondary" id="btnReplyNext">下一页</button>
+          </div>
+          <p class="hint">每条带边框的回复对应一个 <code>entry</code>。长按左侧圆点可调整同一条回复内的发送顺序；行末 <strong>+</strong> 可追加内容。</p>
+        </div>
+      </div>
+
+      <div class="modal-actions modal-actions-sticky">
+        <span class="modal-actions-hint">点击空白处或按 Esc 关闭</span>
+        <div class="modal-actions-buttons">
+          <button type="button" class="secondary" id="btnRuleCancel">取消</button>
+          <button type="button" id="btnRuleSave">确定</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-backdrop" id="batchGroupModal">
+    <div class="modal modal-sticky-actions" role="dialog" aria-modal="true">
+      <div class="modal-header">
+        <h3>批量修改群策略</h3>
+        <button type="button" class="secondary modal-close" id="btnBatchGroupClose" aria-label="关闭">×</button>
+      </div>
+      <div class="modal-body">
+        <p class="hint">将应用于已勾选的 <strong id="batchGroupCount">0</strong> 个词条。</p>
+        <label>修改方式</label>
+        <select id="batchGroupMode">
+          <option value="replace">替换为以下策略</option>
+          <option value="append">在现有群号上追加</option>
+          <option value="global_enable">设为全局启用（黑名单空列表）</option>
+          <option value="global_disable">设为全局禁用</option>
+        </select>
+        <label>群策略模式</label>
+        <select id="batchGroupPolicy">
+          <option value="whitelist">白名单</option>
+          <option value="blacklist">黑名单</option>
+        </select>
+        <label>群号（逗号分隔）</label>
+        <input id="batchGroupIds" placeholder="673486917,123456" />
+      </div>
+      <div class="modal-actions modal-actions-sticky">
+        <span class="modal-actions-hint">点击空白处或按 Esc 关闭</span>
+        <div class="modal-actions-buttons">
+          <button type="button" class="secondary" id="btnBatchGroupCancel">取消</button>
+          <button type="button" id="btnBatchGroupSave">应用</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="partAddMenu" class="part-add-menu" hidden>
+    <button type="button" data-part="text">文本</button>
+    <button type="button" data-part="image">图片</button>
+    <button type="button" data-part="voice">语音</button>
+    <button type="button" data-part="emoji">表情</button>
+    <button type="button" data-part="music">音乐</button>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>

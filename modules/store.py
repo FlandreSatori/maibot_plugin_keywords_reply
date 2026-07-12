@@ -19,6 +19,7 @@
       "mode": "whitelist" | "blacklist",
       "groups": ["123456"],
       "case_sensitive": false,           # 仅 auto_detect 会显式写入
+      "require_at_bot": false,           # 为 true 时须 @ 机器人或命中 is_mentioned 才触发
       "entries": [ entry, ... ]
     }
 
@@ -26,6 +27,8 @@
 
     {
       "text": "",
+      "weight": 100,                     # 多回复时按权重随机抽取
+      "probability": 100,                # 抽中后实际回复的概率（0-100）
       "images": [{"file": "abc.jpg"}],   # data_dir/images 下的文件名
       "records": [{"file": "abc.amr"}],  # 语音，data_dir/records
       "ats": [{"user_id": "123", "nickname": "", "all": false}],
@@ -119,9 +122,18 @@ class KeywordsStore:
                 cfg.setdefault("mode", "whitelist")
                 cfg.setdefault("groups", [])
                 cfg.setdefault("entries", [])
+                cfg.setdefault("require_at_bot", False)
+                if section == "auto_detect":
+                    cfg.setdefault("case_sensitive", False)
                 for entry in cfg.get("entries", []):
                     if not isinstance(entry, dict):
                         continue
+                    has_probability = "probability" in entry
+                    entry.setdefault("weight", 100)
+                    if not has_probability:
+                        KeywordsStore._migrate_legacy_entry_chance(entry)
+                    entry.setdefault("probability", 100)
+                    entry.setdefault("parts", [])
                     entry.setdefault("text", "")
                     entry.setdefault("images", [])
                     entry.setdefault("records", [])
@@ -130,6 +142,19 @@ class KeywordsStore:
                     entry.setdefault("emojis", [])
                     entry.setdefault("music_cards", [])
         return data
+
+    @staticmethod
+    def _migrate_legacy_entry_chance(entry: dict) -> None:
+        """兼容旧数据：将 <=100 的 weight 迁移为触发概率，权重重置为 100。"""
+
+        try:
+            legacy_weight = int(entry.get("weight", 100))
+        except (TypeError, ValueError):
+            legacy_weight = 100
+        legacy_weight = max(0, legacy_weight)
+        if legacy_weight <= 100:
+            entry["probability"] = legacy_weight
+            entry["weight"] = 100
 
     async def save(self) -> None:
         """原子写入 JSON，并清理未引用的媒体文件。"""
@@ -246,6 +271,9 @@ class KeywordsStore:
     def empty_entry() -> dict:
         return {
             "text": "",
+            "weight": 100,
+            "probability": 100,
+            "parts": [],
             "images": [],
             "records": [],
             "ats": [],
@@ -255,8 +283,100 @@ class KeywordsStore:
         }
 
     @staticmethod
+    def _part_has_payload(part: Optional[dict]) -> bool:
+        if not isinstance(part, dict):
+            return False
+        part_type = str(part.get("type") or "").strip().lower()
+        if part_type == "text":
+            return bool((part.get("text") or "").strip())
+        if part_type == "image":
+            return bool((part.get("file") or "").strip())
+        if part_type in {"voice", "record"}:
+            return bool((part.get("file") or "").strip())
+        if part_type == "emoji":
+            return bool((part.get("file") or "").strip())
+        if part_type == "music":
+            return bool(str(part.get("id") or "").strip())
+        if part_type == "face":
+            return part.get("id") is not None
+        if part_type == "at":
+            return bool(str(part.get("user_id") or "").strip()) or bool(part.get("all"))
+        return False
+
+    @staticmethod
+    def uses_ordered_parts(entry: Optional[dict]) -> bool:
+        """entry 是否显式使用有序 parts 列表（每条 part 单独发送）。"""
+
+        entry = entry or {}
+        parts = entry.get("parts")
+        if not isinstance(parts, list) or not parts:
+            return False
+        return any(KeywordsStore._part_has_payload(part) for part in parts if isinstance(part, dict))
+
+    @staticmethod
+    def legacy_entry_to_parts(entry: Optional[dict]) -> List[dict]:
+        """把旧版扁平 entry 字段转换为有序 parts（用于读取兼容）。"""
+
+        entry = entry or {}
+        parts: List[dict] = []
+        text = (entry.get("text") or "").strip()
+        if text:
+            parts.append({"type": "text", "text": text})
+        for at in entry.get("ats", []):
+            if not isinstance(at, dict):
+                continue
+            parts.append(
+                {
+                    "type": "at",
+                    "user_id": str(at.get("user_id", "") or ""),
+                    "nickname": str(at.get("nickname", "") or ""),
+                    "all": bool(at.get("all")),
+                }
+            )
+        for face in entry.get("faces", []):
+            if isinstance(face, dict) and face.get("id") is not None:
+                parts.append({"type": "face", "id": face.get("id")})
+        for music in entry.get("music_cards", []):
+            if not isinstance(music, dict):
+                continue
+            song_id = str(music.get("id") or "").strip()
+            if song_id:
+                parts.append(
+                    {
+                        "type": "music",
+                        "platform": str(music.get("platform") or "163"),
+                        "id": song_id,
+                    }
+                )
+        for img in entry.get("images", []):
+            if isinstance(img, dict) and (img.get("file") or "").strip():
+                parts.append({"type": "image", "file": str(img.get("file") or "").strip()})
+        for emoji in entry.get("emojis", []):
+            if isinstance(emoji, dict) and (emoji.get("file") or "").strip():
+                parts.append({"type": "emoji", "file": str(emoji.get("file") or "").strip()})
+        for voice in entry.get("records", []):
+            if isinstance(voice, dict) and (voice.get("file") or "").strip():
+                parts.append({"type": "voice", "file": str(voice.get("file") or "").strip()})
+        return parts
+
+    @staticmethod
+    def get_ordered_parts(entry: Optional[dict]) -> List[dict]:
+        """返回 entry 的有序 parts；无 parts 时从旧字段推导。"""
+
+        entry = entry or {}
+        if KeywordsStore.uses_ordered_parts(entry):
+            return [
+                part
+                for part in entry.get("parts", [])
+                if isinstance(part, dict) and KeywordsStore._part_has_payload(part)
+            ]
+        return KeywordsStore.legacy_entry_to_parts(entry)
+
+    @staticmethod
     def entry_has_payload(entry: Optional[dict]) -> bool:
         entry = entry or {}
+        if KeywordsStore.uses_ordered_parts(entry):
+            return True
         return bool(
             (entry.get("text") or "").strip()
             or entry.get("images")
@@ -271,6 +391,14 @@ class KeywordsStore:
     def merge_entries(primary: dict, secondary: dict) -> dict:
         primary = primary or {}
         secondary = secondary or {}
+        if KeywordsStore.uses_ordered_parts(primary) or KeywordsStore.uses_ordered_parts(secondary):
+            merged_parts = KeywordsStore.get_ordered_parts(primary) + KeywordsStore.get_ordered_parts(secondary)
+            merged = KeywordsStore.empty_entry()
+            merged["weight"] = primary.get("weight", secondary.get("weight", 100))
+            merged["probability"] = primary.get("probability", secondary.get("probability", 100))
+            merged["parts"] = merged_parts
+            return merged
+
         primary_text = (primary.get("text") or "").strip()
         secondary_text = (secondary.get("text") or "").strip()
         if primary_text and secondary_text:
@@ -283,12 +411,42 @@ class KeywordsStore:
         return merged
 
     @staticmethod
+    def normalize_entry_probability(entry: Optional[dict]) -> int:
+        """将 entry 回复概率规范化为 0-100 整数。"""
+
+        if not isinstance(entry, dict):
+            return 100
+        try:
+            probability = int(entry.get("probability", 100))
+        except (TypeError, ValueError):
+            return 100
+        return max(0, min(100, probability))
+
+    @staticmethod
+    def normalize_entry_weight(entry: Optional[dict]) -> int:
+        """将 entry 权重规范化为非负整数。"""
+
+        if not isinstance(entry, dict):
+            return 100
+        try:
+            weight = int(entry.get("weight", 100))
+        except (TypeError, ValueError):
+            return 100
+        return max(0, weight)
+
+    @staticmethod
     def summarize_entry(entry: dict, max_text: int = 30) -> str:
         text = (entry.get("text") or "").replace("\n", " ")
         summary = text[:max_text]
         if len(text) > max_text:
             summary += "..."
         placeholders = []
+        weight = KeywordsStore.normalize_entry_weight(entry)
+        if weight != 100:
+            placeholders.append(f"[权重:{weight}]")
+        probability = KeywordsStore.normalize_entry_probability(entry)
+        if probability != 100:
+            placeholders.append(f"[概率:{probability}%]")
         if entry.get("images"):
             placeholders.append("[图片]")
         if entry.get("records"):

@@ -19,6 +19,50 @@ from .store import KeywordsStore
 logger = logging.getLogger("plugin.maibot_plugin.keywords_reply")
 
 
+def pick_weighted_entry(entries: List[dict]) -> Optional[dict]:
+    """按 entry.weight 权重随机抽取一条回复。"""
+
+    if not entries:
+        return None
+    if len(entries) == 1:
+        return entries[0]
+
+    weights = [KeywordsStore.normalize_entry_weight(entry) for entry in entries]
+    total = sum(weights)
+    if total <= 0:
+        return random.choice(entries)
+    return random.choices(entries, weights=weights, k=1)[0]
+
+
+def entry_passes_probability(entry: dict) -> bool:
+    """判定抽中的 entry 是否通过概率检查。"""
+
+    probability = KeywordsStore.normalize_entry_probability(entry)
+    if probability >= 100:
+        return True
+    if probability <= 0:
+        return False
+    return random.randint(1, 100) <= probability
+
+
+def pick_entry_for_reply(entries: List[dict]) -> Optional[dict]:
+    """先按权重抽取一条回复，再按该条 probability 决定是否回复。"""
+
+    picked = pick_weighted_entry(entries)
+    if not picked:
+        return None
+    if not entry_passes_probability(picked):
+        logger.debug("已按权重选中回复，但未通过概率判定，跳过发送")
+        return None
+    return picked
+
+
+def message_has_bot_mention(is_at: bool, is_mentioned: bool) -> bool:
+    """判断消息是否包含对机器人的 @ 或平台级提及。"""
+
+    return bool(is_at or is_mentioned)
+
+
 class Matcher:
     """封装匹配所需的缓存与冷却状态。"""
 
@@ -74,7 +118,14 @@ class Matcher:
 
     # ─── 命令触发 ──────────────────────────────────────────────
 
-    def match_command(self, text: str, group_id: str) -> Optional[dict]:
+    def match_command(
+        self,
+        text: str,
+        group_id: str,
+        *,
+        is_at: bool = False,
+        is_mentioned: bool = False,
+    ) -> Optional[dict]:
         text = (text or "").strip()
         if not text or not group_id:
             return None
@@ -85,6 +136,8 @@ class Matcher:
         for cfg in self.store.data.get("command_triggered", []):
             keyword = cfg.get("keyword")
             if not keyword or not cfg.get("enabled", True):
+                continue
+            if cfg.get("require_at_bot") and not message_has_bot_mention(is_at, is_mentioned):
                 continue
             if cfg.get("regex", False):
                 compiled = self._compiled(keyword)
@@ -102,12 +155,23 @@ class Matcher:
             logger.info(f"关键词触发: {potential} (群: {group_id})")
             if self._should_forward(entries, group_id):
                 return {"payload": list(entries), "rule": cfg}
-            return {"payload": random.choice(entries), "rule": cfg}
+            picked = pick_entry_for_reply(entries)
+            if not picked:
+                return None
+            return {"payload": picked, "rule": cfg}
         return None
 
     # ─── 自动监听 ──────────────────────────────────────────────
 
-    def match_detect(self, text: str, group_id: str, session_id: str) -> Optional[dict]:
+    def match_detect(
+        self,
+        text: str,
+        group_id: str,
+        session_id: str,
+        *,
+        is_at: bool = False,
+        is_mentioned: bool = False,
+    ) -> Optional[dict]:
         text = (text or "").strip()
         if not text or not group_id:
             return None
@@ -120,6 +184,8 @@ class Matcher:
         for cfg in self.store.data.get("auto_detect", []):
             keyword = cfg.get("keyword")
             if not keyword or not cfg.get("enabled", True):
+                continue
+            if cfg.get("require_at_bot") and not message_has_bot_mention(is_at, is_mentioned):
                 continue
             is_regex = cfg.get("regex", False)
 
@@ -158,7 +224,10 @@ class Matcher:
             logger.info(f"检测词触发: {keyword} (群: {group_id})")
             if self._should_forward(entries, group_id):
                 return {"payload": list(entries), "rule": cfg}
-            return {"payload": random.choice(entries), "rule": cfg}
+            picked = pick_entry_for_reply(entries)
+            if not picked:
+                return None
+            return {"payload": picked, "rule": cfg}
         return None
 
 
@@ -261,11 +330,14 @@ def describe_status(cfg: dict) -> str:
     enabled = cfg.get("enabled", True)
     mode = cfg.get("mode", "whitelist")
     groups = cfg.get("groups", [])
+    at_hint = "；需@机器人" if cfg.get("require_at_bot") else ""
     if not enabled:
-        return "全局禁用"
+        return f"全局禁用{at_hint}"
     if mode == "blacklist":
-        return "全局启用" if not groups else f"黑名单模式 (禁用群: {', '.join(groups)})"
-    return "未在任何群聊启用" if not groups else f"白名单模式 (允许群: {', '.join(groups)})"
+        base = "全局启用" if not groups else f"黑名单模式 (禁用群: {', '.join(groups)})"
+        return f"{base}{at_hint}"
+    base = "未在任何群聊启用" if not groups else f"白名单模式 (允许群: {', '.join(groups)})"
+    return f"{base}{at_hint}"
 
 
 def describe_status_brief(cfg: dict) -> str:
@@ -274,8 +346,9 @@ def describe_status_brief(cfg: dict) -> str:
     enabled = cfg.get("enabled", True)
     mode = cfg.get("mode", "whitelist")
     groups = cfg.get("groups", [])
+    at_hint = " [@]" if cfg.get("require_at_bot") else ""
     if not enabled:
-        return " [全局禁用]"
+        return f" [全局禁用]{at_hint}"
     if mode == "blacklist":
-        return " [全局启用]" if not groups else f" [黑名单:{','.join(groups)}]"
-    return " [未启用]" if not groups else f" [白名单:{','.join(groups)}]"
+        return (" [全局启用]" if not groups else f" [黑名单:{','.join(groups)}]") + at_hint
+    return (" [未启用]" if not groups else f" [白名单:{','.join(groups)}]") + at_hint

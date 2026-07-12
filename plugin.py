@@ -28,6 +28,7 @@ from .modules.media import (
     build_forward_messages,
     build_music_card_entry,
     build_send_segments,
+    build_ordered_send_batches,
     capture_from_reply,
     capture_media_from_message_dict,
     capture_media_from_trigger,
@@ -293,18 +294,21 @@ class KeywordsReplyPlugin(MaiBotPlugin):
 
         if not isinstance(payload, dict):
             return
-        segments = build_send_segments(
+        batches = build_ordered_send_batches(
             payload, self.store, message, quote=quote, enable_template=enable_tpl
         )
-        if segments:
-            await self.ctx.send.hybrid(segments, stream_id)
+        for segments in batches:
+            if segments:
+                await self.ctx.send.hybrid(segments, stream_id)
 
     async def _send_entry_preview(self, stream_id: str, intro: str, entry: dict, message: Dict[str, Any]) -> None:
         """发送词条详情预览（含媒体，不做模板渲染）。"""
 
-        segments = build_send_segments(entry, self.store, message, quote=False, render=False)
-        segments.insert(0, {"type": "text", "content": intro})
-        await self.ctx.send.hybrid(segments, stream_id)
+        await self.ctx.send.hybrid([{"type": "text", "content": intro}], stream_id)
+        batches = build_ordered_send_batches(entry, self.store, message, quote=False, render=False)
+        for segments in batches:
+            if segments:
+                await self.ctx.send.hybrid(segments, stream_id)
 
     # ─── 通用命令实现 ──────────────────────────────────────────
 
@@ -618,9 +622,94 @@ class KeywordsReplyPlugin(MaiBotPlugin):
 
         if not (0 <= reply_idx < len(entries)):
             return await self._send(stream_id, "回复序号无效。")
-        intro = f"{label} '{cfg['keyword']}' 的第 {reply_idx + 1} 个回复：\n"
+        intro = (
+            f"{label} '{cfg['keyword']}' 的第 {reply_idx + 1} 个回复"
+            f"（权重 {self.store.normalize_entry_weight(entries[reply_idx])}，"
+            f"概率 {self.store.normalize_entry_probability(entries[reply_idx])}%）：\n"
+        )
         await self._send_entry_preview(stream_id, intro, entries[reply_idx], message)
         return True, intro, True
+
+    async def _cmd_set_require_at(self, section: str, kwargs: Dict[str, Any]) -> tuple[bool, str, bool]:
+        stream_id = kwargs.get("stream_id", "")
+        label = SECTION_LABELS[section]
+        if not await self._is_admin(kwargs.get("platform", ""), kwargs.get("user_id", "")):
+            return await self._deny(stream_id)
+
+        tokens = self._args(kwargs).split()
+        usage = f"用法: /设置{label}需@ <序号/内容> on|off"
+        if len(tokens) < 2:
+            return await self._send(stream_id, usage)
+
+        flag = tokens[1].strip().lower()
+        if flag in {"on", "开", "true", "1", "是", "yes"}:
+            require_at = True
+        elif flag in {"off", "关", "false", "0", "否", "no"}:
+            require_at = False
+        else:
+            return await self._send(stream_id, usage)
+
+        data = self.store.data[section]
+        indices = find_indices(data, tokens[0], self.config.reply.case_sensitive)
+        if not indices:
+            return await self._send(stream_id, f"未找到匹配 '{tokens[0]}' 的{label}。")
+
+        cfg = data[indices[0]]
+        cfg["require_at_bot"] = require_at
+        await self.store.save()
+        state = "开启" if require_at else "关闭"
+        return await self._send(stream_id, f"已{state} {label} '{cfg['keyword']}' 的「需@机器人」限制。")
+
+    async def _cmd_set_entry_weight(self, section: str, kwargs: Dict[str, Any]) -> tuple[bool, str, bool]:
+        stream_id = kwargs.get("stream_id", "")
+        label = SECTION_LABELS[section]
+        if not await self._is_admin(kwargs.get("platform", ""), kwargs.get("user_id", "")):
+            return await self._deny(stream_id)
+
+        tokens = self._args(kwargs).split()
+        usage = f"用法: /设置{label}权重 <序号/内容> <回复序号> <权重>"
+        if len(tokens) < 3:
+            return await self._send(stream_id, usage)
+        if not tokens[1].isdigit():
+            return await self._send(stream_id, "回复序号必须是数字。")
+        try:
+            weight = int(tokens[2])
+        except ValueError:
+            return await self._send(stream_id, "权重必须是整数。")
+        if weight < 0:
+            return await self._send(stream_id, "权重不能为负数。")
+
+        data = self.store.data[section]
+        indices = find_indices(data, tokens[0], self.config.reply.case_sensitive)
+        if not indices:
+            return await self._send(stream_id, f"未找到匹配 '{tokens[0]}' 的{label}。")
+
+        cfg = data[indices[0]]
+        entries = cfg.get("entries", [])
+        reply_idx = int(tokens[1]) - 1
+        if not (0 <= reply_idx < len(entries)):
+            return await self._send(stream_id, "回复序号无效。")
+
+        entries[reply_idx]["weight"] = weight
+        await self.store.save()
+        return await self._send(
+            stream_id,
+            f"已将 {label} '{cfg['keyword']}' 的第 {reply_idx + 1} 条回复权重设为 {weight}。",
+        )
+
+    async def _cmd_reload_store(self, kwargs: Dict[str, Any]) -> tuple[bool, str, bool]:
+        stream_id = kwargs.get("stream_id", "")
+        if not await self._is_admin(kwargs.get("platform", ""), kwargs.get("user_id", "")):
+            return await self._deny(stream_id)
+
+        self.store.data = self.store.normalize(self.store._load())
+        self.store.bump_version()
+        keyword_count = len(self.store.data.get(SECTION_KEYWORD, []))
+        detect_count = len(self.store.data.get(SECTION_DETECT, []))
+        return await self._send(
+            stream_id,
+            f"词库已从磁盘重载：关键词 {keyword_count} 条，检测词 {detect_count} 条。",
+        )
 
     async def _cmd_add_reply(self, section: str, kwargs: Dict[str, Any]) -> tuple[bool, str, bool]:
         stream_id = kwargs.get("stream_id", "")
@@ -778,6 +867,14 @@ class KeywordsReplyPlugin(MaiBotPlugin):
     async def del_keyword_reply(self, **kwargs: Any):
         return await self._cmd_delete_reply(SECTION_KEYWORD, kwargs)
 
+    @Command("kr_set_keyword_require_at", description="设置关键词需@", pattern=r"/设置关键词需@(?:\s+(?P<args>[\s\S]+))?$")
+    async def set_keyword_require_at(self, **kwargs: Any):
+        return await self._cmd_set_require_at(SECTION_KEYWORD, kwargs)
+
+    @Command("kr_set_keyword_weight", description="设置关键词回复权重", pattern=r"/设置关键词权重(?:\s+(?P<args>[\s\S]+))?$")
+    async def set_keyword_weight(self, **kwargs: Any):
+        return await self._cmd_set_entry_weight(SECTION_KEYWORD, kwargs)
+
     # ─── 检测词命令（auto_detect） ───────────────────────────────
 
     @Command("kr_add_detect", description="添加检测词", pattern=r"/添加检测词(?:\s+(?P<args>[\s\S]+))?$")
@@ -824,9 +921,21 @@ class KeywordsReplyPlugin(MaiBotPlugin):
     async def del_detect_reply(self, **kwargs: Any):
         return await self._cmd_delete_reply(SECTION_DETECT, kwargs)
 
+    @Command("kr_set_detect_require_at", description="设置检测词需@", pattern=r"/设置检测词需@(?:\s+(?P<args>[\s\S]+))?$")
+    async def set_detect_require_at(self, **kwargs: Any):
+        return await self._cmd_set_require_at(SECTION_DETECT, kwargs)
+
+    @Command("kr_set_detect_weight", description="设置检测词回复权重", pattern=r"/设置检测词权重(?:\s+(?P<args>[\s\S]+))?$")
+    async def set_detect_weight(self, **kwargs: Any):
+        return await self._cmd_set_entry_weight(SECTION_DETECT, kwargs)
+
+    @Command("kr_reload_store", description="重载词库", pattern=r"/重载词库$")
+    async def reload_store(self, **kwargs: Any):
+        return await self._cmd_reload_store(kwargs)
+
     # ─── 自动回复（Hook + EventHandler 双路径） ─────────────────
 
-    _MGMT_PREFIXES = ("/添加", "/编辑", "/删除", "/启用", "/禁用", "/查看")
+    _MGMT_PREFIXES = ("/添加", "/编辑", "/删除", "/启用", "/禁用", "/查看", "/设置", "/重载")
 
     @HookHandler(
         "chat.receive.before_process",
@@ -885,13 +994,27 @@ class KeywordsReplyPlugin(MaiBotPlugin):
         session_id = str(message.get("session_id", "") or "")
         stream_id = session_id
 
+        is_at = bool(message.get("is_at"))
+        is_mentioned = bool(message.get("is_mentioned"))
+
         try:
-            command_match = self.matcher.match_command(text, group_id)
+            command_match = self.matcher.match_command(
+                text,
+                group_id,
+                is_at=is_at,
+                is_mentioned=is_mentioned,
+            )
             if command_match:
                 await self._dispatch_reply(stream_id, command_match, message)
                 return "keyword"
 
-            detect_match = self.matcher.match_detect(text, group_id, session_id)
+            detect_match = self.matcher.match_detect(
+                text,
+                group_id,
+                session_id,
+                is_at=is_at,
+                is_mentioned=is_mentioned,
+            )
             if detect_match:
                 await self._dispatch_reply(stream_id, detect_match, message)
                 return "detect"
