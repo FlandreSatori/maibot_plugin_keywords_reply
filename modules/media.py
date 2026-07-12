@@ -251,6 +251,40 @@ def _append_music_card(entry: dict, card: Optional[dict]) -> None:
     )
 
 
+_MUSIC_PLATFORM_ALIASES = {
+    "netease": "163",
+    "网易云": "163",
+    "网易云音乐": "163",
+    "qq音乐": "qq",
+    "咪咕": "migu",
+    "酷狗": "kugou",
+    "酷我": "kuwo",
+}
+
+
+def normalize_music_platform(platform: str, *, default: str = "163") -> Optional[str]:
+    """规范化 OneBot 音乐平台标识，未知值返回 ``None``。"""
+
+    normalized = str(platform or "").strip().lower()
+    if not normalized:
+        return default if default in _ONEBOT_MUSIC_PLATFORMS else None
+    if normalized in _ONEBOT_MUSIC_PLATFORMS:
+        return normalized
+    return _MUSIC_PLATFORM_ALIASES.get(normalized)
+
+
+def build_music_card_entry(platform: str, song_id: str, store: KeywordsStore) -> dict:
+    """根据平台与歌曲 ID 构建仅含音乐卡片的 entry。"""
+
+    entry = store.empty_entry()
+    _append_music_card(entry, {"platform": platform, "id": song_id, "title": "", "artist": ""})
+    return entry
+
+
+def supported_music_platforms_text() -> str:
+    return "163, qq, migu, kugou, kuwo（默认 163）"
+
+
 def _build_music_send_segment(card: dict) -> Optional[dict]:
     """构建 MaiBot/OneBot 可识别的音乐卡片发送段。"""
 

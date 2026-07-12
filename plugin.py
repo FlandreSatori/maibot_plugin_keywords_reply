@@ -26,13 +26,16 @@ from .modules.matching import (
 )
 from .modules.media import (
     build_forward_messages,
+    build_music_card_entry,
     build_send_segments,
     capture_from_reply,
     capture_media_from_message_dict,
     capture_media_from_trigger,
     extract_inline_ats,
     is_management_command_message,
+    normalize_music_platform,
     sanitize_entry_text,
+    supported_music_platforms_text,
 )
 from .modules.store import KeywordsStore
 from .modules.templates import is_safe_regex, strip_auto_media_text
@@ -376,6 +379,64 @@ class KeywordsReplyPlugin(MaiBotPlugin):
         await self.store.save()
         return await self._send(stream_id, f"成功操作{label}: {keyword}\n{status}")
 
+    async def _cmd_add_music(self, kwargs: Dict[str, Any]) -> tuple[bool, str, bool]:
+        """通过歌曲 ID 直接添加带音乐卡片回复的关键词。"""
+
+        stream_id = kwargs.get("stream_id", "")
+        group_id = str(kwargs.get("group_id", "") or "")
+        label = SECTION_LABELS[SECTION_KEYWORD]
+        if not await self._is_admin(kwargs.get("platform", ""), kwargs.get("user_id", "")):
+            return await self._deny(stream_id)
+
+        tokens = self._args(kwargs).split()
+        usage = (
+            f"用法: /添加音乐 <关键词> <歌曲ID> [平台]\n"
+            f"平台默认为 163（网易云），可选: {supported_music_platforms_text()}"
+        )
+        if len(tokens) < 2:
+            return await self._send(stream_id, usage)
+
+        keyword = strip_auto_media_text(tokens[0])
+        song_id = str(tokens[1] or "").strip()
+        platform_raw = tokens[2] if len(tokens) > 2 else "163"
+        platform = normalize_music_platform(platform_raw)
+
+        if not keyword:
+            return await self._send(stream_id, f"{label}不能为空。")
+        if not song_id.isdigit():
+            return await self._send(stream_id, "歌曲 ID 必须是数字。")
+        if not platform:
+            return await self._send(
+                stream_id,
+                f"不支持的平台: {platform_raw}。可选: {supported_music_platforms_text()}",
+            )
+
+        entry = build_music_card_entry(platform, song_id, self.store)
+        rule = self._find_rule(SECTION_KEYWORD, keyword, False)
+        if rule is not None:
+            rule["entries"].append(entry)
+            status = f"已为现有关键词添加音乐卡片回复（平台 {platform}，ID {song_id}，共 {len(rule['entries'])} 个回复）。"
+        else:
+            if group_id:
+                enabled, mode, groups = True, "whitelist", [group_id]
+                status = f"已成功添加关键词，并在当前群聊启用（音乐平台 {platform}，ID {song_id}）。"
+            else:
+                enabled, mode, groups = False, "whitelist", []
+                status = f"已成功添加关键词（音乐平台 {platform}，ID {song_id}）。由于非群聊环境创建，已默认全局禁用。"
+            self.store.data[SECTION_KEYWORD].append(
+                {
+                    "keyword": keyword,
+                    "entries": [entry],
+                    "regex": False,
+                    "enabled": enabled,
+                    "mode": mode,
+                    "groups": groups,
+                }
+            )
+
+        await self.store.save()
+        return await self._send(stream_id, f"成功操作关键词: {keyword}\n{status}")
+
     async def _cmd_edit(self, section: str, kwargs: Dict[str, Any]) -> tuple[bool, str, bool]:
         stream_id = kwargs.get("stream_id", "")
         label = SECTION_LABELS[section]
@@ -672,6 +733,10 @@ class KeywordsReplyPlugin(MaiBotPlugin):
     @Command("kr_add_keyword", description="添加关键词", pattern=r"/添加关键词(?:\s+(?P<args>[\s\S]+))?$")
     async def add_keyword(self, **kwargs: Any):
         return await self._cmd_add(SECTION_KEYWORD, kwargs)
+
+    @Command("kr_add_music", description="添加音乐卡片关键词", pattern=r"/添加音乐(?:\s+(?P<args>[\s\S]+))?$")
+    async def add_music(self, **kwargs: Any):
+        return await self._cmd_add_music(kwargs)
 
     @Command("kr_edit_keyword", description="编辑关键词", pattern=r"/编辑关键词(?:\s+(?P<args>[\s\S]+))?$")
     async def edit_keyword(self, **kwargs: Any):
