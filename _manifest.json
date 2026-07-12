@@ -1,0 +1,41 @@
+{
+  "manifest_version": 2,
+  "version": "1.0.0",
+  "name": "关键词回复",
+  "description": "关键词/检测词自动回复插件，支持指令触发与自动监听、正则匹配、图文/At/表情/语音富媒体回复、群聊黑白名单与变量模板。由 AstrBot 同名插件迁移而来。",
+  "author": {
+    "name": "Foolllll",
+    "url": "https://github.com/Foolllll-J"
+  },
+  "license": "AGPL-3.0-or-later",
+  "urls": {
+    "repository": "https://github.com/Foolllll-J/astrbot_plugin_keywords_reply",
+    "homepage": "https://github.com/Foolllll-J/astrbot_plugin_keywords_reply",
+    "issues": "https://github.com/Foolllll-J/astrbot_plugin_keywords_reply/issues"
+  },
+  "changelog": "CHANGELOG.md",
+  "host_application": {
+    "min_version": "1.0.0",
+    "max_version": "1.0.0"
+  },
+  "sdk": {
+    "min_version": "2.0.0",
+    "max_version": "2.99.99"
+  },
+  "dependencies": [],
+  "capabilities": [
+    "send.text",
+    "send.hybrid",
+    "send.forward",
+    "message.get_by_id",
+    "config.get"
+  ],
+  "i18n": {
+    "default_locale": "zh-CN",
+    "locales_path": "_locales",
+    "supported_locales": [
+      "zh-CN"
+    ]
+  },
+  "id": "foolllll.keywords-reply"
+}

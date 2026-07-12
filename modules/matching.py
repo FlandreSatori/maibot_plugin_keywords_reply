@@ -1,0 +1,281 @@
+"""关键词/检测词匹配引擎。
+
+- 命令触发（command_triggered）：整条消息首个 token 与关键词精确匹配（或正则 fullmatch）。
+- 自动监听（auto_detect）：消息文本包含检测词（或正则 search）。
+
+两种模式均支持：群聊黑白名单、大小写敏感、（检测词）触发冷却。
+"""
+
+from __future__ import annotations
+
+import logging
+import random
+import re
+import time
+from typing import Any, Callable, Dict, List, Optional
+
+from .store import KeywordsStore
+
+logger = logging.getLogger("plugin.foolllll.keywords-reply")
+
+
+class Matcher:
+    """封装匹配所需的缓存与冷却状态。"""
+
+    def __init__(self, store: KeywordsStore, get_settings: Callable[[], Dict[str, Any]]) -> None:
+        self.store = store
+        self.get_settings = get_settings
+        self._regex_cache: Dict[tuple, Optional[re.Pattern]] = {}
+        self._regex_cache_version = -1
+        self._last_triggered: Dict[str, float] = {}
+
+    def _compiled(self, pattern: str) -> Optional[re.Pattern]:
+        if self._regex_cache_version != self.store.data_version:
+            self._regex_cache.clear()
+            self._regex_cache_version = self.store.data_version
+        cached = self._regex_cache.get(pattern)
+        if cached is not None:
+            return cached
+        try:
+            compiled = re.compile(pattern)
+            self._regex_cache[pattern] = compiled
+            return compiled
+        except Exception as exc:
+            logger.error(f"正则编译失败({pattern}): {exc}")
+            self._regex_cache[pattern] = None
+            return None
+
+    @staticmethod
+    def is_enabled_in_group(cfg: dict, group_id: str) -> bool:
+        if not cfg.get("enabled", True):
+            return False
+        mode = cfg.get("mode", "whitelist")
+        groups = cfg.get("groups", [])
+        if mode == "whitelist":
+            return group_id in groups
+        return group_id not in groups
+
+    def _group_allows(self, cfg: dict, group_id: str) -> bool:
+        mode = cfg.get("mode", "whitelist")
+        groups = cfg.get("groups", [])
+        if mode == "whitelist":
+            return group_id in groups
+        return group_id not in groups
+
+    def _should_forward(self, entries: List[dict], group_id: str) -> bool:
+        settings = self.get_settings()
+        if not settings.get("qq_forward_all_replies", False):
+            return False
+        if len(entries or []) <= 1:
+            return False
+        if not group_id:
+            return False
+        return True
+
+    # ─── 命令触发 ──────────────────────────────────────────────
+
+    def match_command(self, text: str, group_id: str) -> Optional[dict]:
+        text = (text or "").strip()
+        if not text or not group_id:
+            return None
+        potential = text.split()[0]
+        settings = self.get_settings()
+        case_sensitive = bool(settings.get("case_sensitive", False))
+
+        for cfg in self.store.data.get("command_triggered", []):
+            keyword = cfg.get("keyword")
+            if not keyword or not cfg.get("enabled", True):
+                continue
+            if cfg.get("regex", False):
+                compiled = self._compiled(keyword)
+                if compiled is None or not compiled.fullmatch(potential):
+                    continue
+            else:
+                left, right = (potential, keyword) if case_sensitive else (potential.lower(), keyword.lower())
+                if left != right:
+                    continue
+            if not self._group_allows(cfg, group_id):
+                continue
+            entries = cfg.get("entries") or []
+            if not entries:
+                return None
+            logger.info(f"关键词触发: {potential} (群: {group_id})")
+            if self._should_forward(entries, group_id):
+                return {"payload": list(entries), "rule": cfg}
+            return {"payload": random.choice(entries), "rule": cfg}
+        return None
+
+    # ─── 自动监听 ──────────────────────────────────────────────
+
+    def match_detect(self, text: str, group_id: str, session_id: str) -> Optional[dict]:
+        text = (text or "").strip()
+        if not text or not group_id:
+            return None
+        settings = self.get_settings()
+        global_case_sensitive = bool(settings.get("case_sensitive", False))
+        cooldown = int(settings.get("cooldown", 0) or 0)
+        ignore_cd_exact = bool(settings.get("ignore_cooldown_on_exact_match", False))
+        now = time.time()
+
+        for cfg in self.store.data.get("auto_detect", []):
+            keyword = cfg.get("keyword")
+            if not keyword or not cfg.get("enabled", True):
+                continue
+            is_regex = cfg.get("regex", False)
+
+            if is_regex:
+                compiled = self._compiled(keyword)
+                if compiled is None or not compiled.search(text):
+                    continue
+                is_exact = False
+            else:
+                if global_case_sensitive:
+                    hay, needle = text, keyword
+                    is_exact = text == keyword
+                else:
+                    hay, needle = text.lower(), keyword.lower()
+                    is_exact = text.lower() == keyword.lower()
+                if needle not in hay:
+                    continue
+
+            if not self._group_allows(cfg, group_id):
+                continue
+
+            entries = cfg.get("entries") or []
+            if not entries:
+                continue
+
+            skip_cooldown = ignore_cd_exact and is_exact and not is_regex
+            if not skip_cooldown and cooldown > 0 and session_id in self._last_triggered:
+                elapsed = now - self._last_triggered[session_id]
+                if elapsed < cooldown:
+                    logger.debug(f"检测词冷却中 (session: {session_id})，剩余 {cooldown - elapsed:.1f}s")
+                    continue
+
+            if cooldown > 0 and not skip_cooldown:
+                self._last_triggered[session_id] = now
+
+            logger.info(f"检测词触发: {keyword} (群: {group_id})")
+            if self._should_forward(entries, group_id):
+                return {"payload": list(entries), "rule": cfg}
+            return {"payload": random.choice(entries), "rule": cfg}
+        return None
+
+
+# ─── 序号/内容查找与群聊开关（供命令处理复用） ────────────────────
+
+
+def find_indices(data: List[dict], param: str, case_sensitive: bool = False) -> List[int]:
+    """支持 ``1,2-5`` 形式的序号，或按关键词内容匹配，返回索引列表。"""
+
+    if not data:
+        return []
+    try:
+        indices: List[int] = []
+        for part in param.split(","):
+            if "-" in part:
+                start, end = map(int, part.split("-"))
+                indices.extend(range(start - 1, end))
+            else:
+                indices.append(int(part) - 1)
+        valid = [i for i in indices if 0 <= i < len(data)]
+        if valid:
+            return valid
+    except ValueError:
+        pass
+
+    matched: List[int] = []
+    for i, cfg in enumerate(data):
+        keyword = cfg.get("keyword", "")
+        is_regex = cfg.get("regex", False)
+        if is_regex or case_sensitive:
+            equal = keyword == param
+        else:
+            equal = keyword.lower() == param.lower()
+        if equal:
+            matched.append(i)
+    return matched
+
+
+def apply_group_toggle(cfg: dict, enable: bool, args: List[str], current_group_id: str) -> tuple[bool, str]:
+    """应用启用/禁用群聊逻辑，返回 (是否成功, 描述或错误信息)。"""
+
+    if enable:
+        if not args:
+            if current_group_id:
+                if cfg["mode"] == "blacklist":
+                    if current_group_id in cfg["groups"]:
+                        cfg["groups"].remove(current_group_id)
+                else:
+                    if current_group_id not in cfg["groups"]:
+                        cfg["groups"].append(current_group_id)
+                cfg["enabled"] = True
+                return True, f"当前群聊 ({current_group_id})"
+            return False, "当前不在群聊中，请指定群号或使用'全局'参数。"
+        if args[0] == "全局":
+            cfg["enabled"] = True
+            cfg["mode"] = "blacklist"
+            cfg["groups"] = []
+            return True, "全局 (所有群聊)"
+        if cfg["mode"] != "whitelist":
+            cfg["mode"] = "whitelist"
+            cfg["groups"] = []
+        for gid in args:
+            if not gid.isdigit():
+                return False, f"群号格式错误: {gid}"
+            if gid not in cfg["groups"]:
+                cfg["groups"].append(gid)
+        cfg["enabled"] = True
+        return True, ", ".join(args)
+
+    # 禁用
+    if not args:
+        if current_group_id:
+            if cfg["mode"] != "blacklist":
+                cfg["mode"] = "blacklist"
+                cfg["groups"] = []
+            if current_group_id not in cfg["groups"]:
+                cfg["groups"].append(current_group_id)
+            cfg["enabled"] = True
+            return True, f"当前群聊 ({current_group_id})"
+        cfg["enabled"] = False
+        return True, "全局"
+    if args[0] == "全局":
+        cfg["enabled"] = False
+        return True, "全局"
+    if cfg["mode"] != "blacklist":
+        cfg["mode"] = "blacklist"
+        cfg["groups"] = []
+    for gid in args:
+        if not gid.isdigit():
+            return False, f"群号格式错误: {gid}"
+        if gid not in cfg["groups"]:
+            cfg["groups"].append(gid)
+    cfg["enabled"] = True
+    return True, ", ".join(args)
+
+
+def describe_status(cfg: dict) -> str:
+    """生成词条群聊状态的简短描述。"""
+
+    enabled = cfg.get("enabled", True)
+    mode = cfg.get("mode", "whitelist")
+    groups = cfg.get("groups", [])
+    if not enabled:
+        return "全局禁用"
+    if mode == "blacklist":
+        return "全局启用" if not groups else f"黑名单模式 (禁用群: {', '.join(groups)})"
+    return "未在任何群聊启用" if not groups else f"白名单模式 (允许群: {', '.join(groups)})"
+
+
+def describe_status_brief(cfg: dict) -> str:
+    """列表用的方括号状态标记。"""
+
+    enabled = cfg.get("enabled", True)
+    mode = cfg.get("mode", "whitelist")
+    groups = cfg.get("groups", [])
+    if not enabled:
+        return " [全局禁用]"
+    if mode == "blacklist":
+        return " [全局启用]" if not groups else f" [黑名单:{','.join(groups)}]"
+    return " [未启用]" if not groups else f" [白名单:{','.join(groups)}]"

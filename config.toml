@@ -1,0 +1,32 @@
+[plugin]
+enabled = true
+config_version = "1.0.0"
+
+[permission]
+# 允许管理关键词/检测词的用户 ID 列表（platform:user_id 或 纯 user_id 均可）。
+# 同时，全局配置 plugin.permission 中的管理员也拥有管理权限。
+whitelist = []
+# 无权限用户执行受限命令时是否发送“权限不足”提示；关闭后静默忽略。
+notify_permission_denied = true
+# 是否允许普通群成员使用“查看关键词列表”（仅显示当前群已启用的关键词名）。
+allow_group_member_list_keywords = false
+# 是否允许普通群成员使用“查看检测词列表”（仅显示当前群已启用的检测词名）。
+allow_group_member_list_detects = false
+
+[reply]
+# 回复时是否引用触发回复的消息。
+quote_reply = false
+# 同一关键词/检测词下有多条回复时，是否以合并转发形式发送全部回复；关闭时随机发送单条。
+qq_forward_all_replies = false
+# 非正则关键词/检测词匹配时是否区分大小写。
+case_sensitive = false
+
+[detect]
+# 检测词触发冷却时间（秒），0 表示不冷却。
+cooldown = 0
+# 完全匹配时是否无视冷却时间（仅对非正则检测词生效）。
+ignore_cooldown_on_exact_match = false
+
+[template]
+# 是否启用回复文本变量模板替换（{user_id} {user_name} {group_id} {self_id} {platform} {message} {date} {time} {datetime}）。
+enable_text_template = true
