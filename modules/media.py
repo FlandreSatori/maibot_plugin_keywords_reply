@@ -16,9 +16,11 @@ MaiBot 出站消息段格式（见 host message_utils）::
 
 from __future__ import annotations
 
+import base64
 import logging
 import re
 from typing import Any, Dict, List, Optional
+from urllib import request as urllib_request
 
 from .store import KeywordsStore
 from .templates import render_template_text
@@ -50,6 +52,64 @@ def _segment_data(seg: dict) -> Any:
     return seg.get("data")
 
 
+def _unwrap_message_payload(raw: Any) -> Optional[Dict[str, Any]]:
+    """兼容 ``get_by_id`` 直接返回消息体或 ``{success, message}`` 包装。"""
+
+    if not isinstance(raw, dict):
+        return None
+    if isinstance(raw.get("raw_message"), list):
+        return raw
+    if raw.get("success") is False:
+        return None
+    nested = raw.get("message")
+    if isinstance(nested, dict):
+        return nested
+    return None
+
+
+def _segments_of(message: Any) -> List[dict]:
+    """从消息字典中取出 ``raw_message`` 段列表。"""
+
+    payload = _unwrap_message_payload(message)
+    if not payload:
+        return []
+    segments = payload.get("raw_message")
+    return segments if isinstance(segments, list) else []
+
+
+def _download_url_base64(url: str) -> str:
+    """尽力从 HTTP(S) URL 下载资源并转为 base64。"""
+
+    normalized = str(url or "").strip()
+    if not normalized.startswith(("http://", "https://")):
+        return ""
+    try:
+        with urllib_request.urlopen(normalized, timeout=15) as resp:
+            return base64.b64encode(resp.read()).decode("utf-8")
+    except Exception as exc:
+        logger.warning(f"下载媒体失败: {normalized[:120]} error={exc}")
+        return ""
+
+
+def _resolve_segment_binary_base64(seg: dict) -> str:
+    """从消息段解析可用于落盘的 base64 数据。"""
+
+    direct = str(seg.get("binary_data_base64", "") or "").strip()
+    if direct:
+        return direct
+
+    data = _segment_data(seg)
+    if isinstance(data, str):
+        normalized = data.strip()
+        if normalized.startswith(("http://", "https://")):
+            return _download_url_base64(normalized)
+        if normalized.startswith("base64://"):
+            return normalized[len("base64://") :]
+        if normalized.startswith("data:") and ";base64," in normalized:
+            return normalized.split(";base64,", 1)[1]
+    return ""
+
+
 def build_entry_from_segments(
     segments: List[dict],
     store: KeywordsStore,
@@ -66,7 +126,6 @@ def build_entry_from_segments(
         seg_type = str(seg.get("type", "")).strip().lower()
 
         if seg_type == "text":
-            # 仅在需要文本时解析文本与内联 [@]，避免与命令解析器重复提取。
             if include_text:
                 content = str(_segment_data(seg) or "")
                 if content:
@@ -82,7 +141,7 @@ def build_entry_from_segments(
                 if uid:
                     entry["ats"].append({"user_id": uid, "nickname": nickname, "all": uid.lower() == "all"})
         elif seg_type in ("image", "emoji", "voice"):
-            b64 = str(seg.get("binary_data_base64", "") or "")
+            b64 = _resolve_segment_binary_base64(seg)
             media_key = {"image": "images", "emoji": "emojis", "voice": "records"}[seg_type]
             if b64:
                 filename = store.save_media_base64(media_key, b64)
@@ -93,7 +152,6 @@ def build_entry_from_segments(
             if isinstance(data, dict) and data.get("id") is not None:
                 entry["faces"].append({"id": data.get("id")})
         elif seg_type == "dict":
-            # QQ 原生表情等以 DictComponent 透传，尽力识别 face
             data = _segment_data(seg) or {}
             if isinstance(data, dict) and str(data.get("type", "")).lower() == "face":
                 face_data = data.get("data", data)
@@ -126,27 +184,45 @@ def _extract_reply_target_id(message: Dict[str, Any]) -> Optional[str]:
     return None
 
 
-async def capture_media_from_trigger(ctx: Any, store: KeywordsStore, message: Dict[str, Any]) -> dict:
-    """从触发命令的消息中捕获媒体（不含文本，文本由命令解析器处理）。
+async def _fetch_message_segments(ctx: Any, message_id: str, stream_id: str) -> List[dict]:
+    """通过 ``get_by_id`` 拉取消息段；失败时返回空列表。"""
 
-    命令消息在 Command 处理器中不含二进制数据，需通过 get_by_id 重新拉取。
-    """
+    if not message_id:
+        return []
+    try:
+        raw = await ctx.message.get_by_id(
+            message_id,
+            stream_id=stream_id,
+            chat_id=stream_id,
+            include_binary_data=True,
+        )
+    except Exception as exc:
+        logger.warning(f"get_by_id 失败: message_id={message_id}, error={exc}")
+        return []
+    return _segments_of(raw)
+
+
+async def capture_media_from_trigger(ctx: Any, store: KeywordsStore, message: Dict[str, Any]) -> dict:
+    """从触发命令的消息中捕获媒体（不含文本，文本由命令解析器处理）。"""
 
     empty = store.empty_entry()
     if not isinstance(message, dict):
         return empty
-    message_id = str(message.get("message_id", "") or "").strip()
+
     stream_id = str(message.get("session_id", "") or "").strip()
+    local_segments = message.get("raw_message", []) or []
+    local_entry = build_entry_from_segments(local_segments, store, include_text=False)
+    if store.entry_has_payload(local_entry):
+        return local_entry
+
+    message_id = str(message.get("message_id", "") or "").strip()
     if not message_id:
-        # 退化：直接使用手头 segments（可能已含二进制，如事件场景）
-        return build_entry_from_segments(message.get("raw_message", []), store, include_text=False)
-    try:
-        full = await ctx.message.get_by_id(message_id, stream_id=stream_id, include_binary_data=True)
-    except Exception as exc:
-        logger.warning(f"拉取触发消息媒体失败: {exc}")
-        full = None
-    segments = _segments_of(full) or message.get("raw_message", [])
-    return build_entry_from_segments(segments, store, include_text=False)
+        return empty
+
+    segments = await _fetch_message_segments(ctx, message_id, stream_id)
+    if segments:
+        return build_entry_from_segments(segments, store, include_text=False)
+    return empty
 
 
 async def capture_from_reply(ctx: Any, store: KeywordsStore, message: Dict[str, Any]) -> dict:
@@ -157,25 +233,10 @@ async def capture_from_reply(ctx: Any, store: KeywordsStore, message: Dict[str, 
     if not target_id:
         return empty
     stream_id = str(message.get("session_id", "") or "").strip() if isinstance(message, dict) else ""
-    try:
-        quoted = await ctx.message.get_by_id(target_id, stream_id=stream_id, include_binary_data=True)
-    except Exception as exc:
-        logger.warning(f"拉取引用消息失败: message_id={target_id}, error={exc}")
-        return empty
-    segments = _segments_of(quoted)
+    segments = await _fetch_message_segments(ctx, target_id, stream_id)
     if not segments:
         return empty
     return build_entry_from_segments(segments, store, include_text=True)
-
-
-def _segments_of(message: Any) -> List[dict]:
-    """从 get_by_id 返回值中取出 raw_message 段列表。"""
-
-    if isinstance(message, dict):
-        segments = message.get("raw_message")
-        if isinstance(segments, list):
-            return segments
-    return []
 
 
 # ─── 发送段构建 ────────────────────────────────────────────────
@@ -216,7 +277,6 @@ def build_send_segments(
             )
 
     for face in entry.get("faces", []):
-        # 尽力发送 QQ 原生表情；不受支持的适配器会降级忽略。
         segments.append({"type": "face", "data": {"id": face.get("id")}})
 
     for img in entry.get("images", []):
