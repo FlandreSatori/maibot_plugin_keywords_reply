@@ -4,6 +4,7 @@ const REPLY_KINDS = {
   image: { label: "图片", prefix: "images/" },
   voice: { label: "语音", prefix: "records/" },
   emoji: { label: "表情", prefix: "emojis/" },
+  video: { label: "视频", prefix: "videos/" },
 };
 
 const MUSIC_PLATFORMS = [
@@ -54,6 +55,7 @@ function emptyEntry() {
     ats: [],
     faces: [],
     emojis: [],
+    videos: [],
     music_cards: [],
   };
 }
@@ -120,7 +122,7 @@ function entryHasPayload(entry) {
           if (seg.type === "text") return !!(seg.text || "").trim();
           if (seg.type === "music") return !!(seg.id || "").trim();
           if (seg.type === "face") return seg.id != null && String(seg.id).trim() !== "";
-          if (seg.type === "image" || seg.type === "voice" || seg.type === "emoji") {
+          if (seg.type === "image" || seg.type === "voice" || seg.type === "emoji" || seg.type === "video") {
             return !!(seg.file || "").trim();
           }
           return false;
@@ -129,7 +131,7 @@ function entryHasPayload(entry) {
       if (part.type === "text") return !!(part.text || "").trim();
       if (part.type === "music") return !!(part.id || "").trim();
       if (part.type === "face") return part.id != null && String(part.id).trim() !== "";
-      if (part.type === "image" || part.type === "voice" || part.type === "emoji") {
+      if (part.type === "image" || part.type === "voice" || part.type === "emoji" || part.type === "video") {
         return !!(part.file || "").trim();
       }
       return false;
@@ -140,6 +142,7 @@ function entryHasPayload(entry) {
       entry.images?.length ||
       entry.records?.length ||
       entry.emojis?.length ||
+      entry.videos?.length ||
       entry.music_cards?.length ||
       entry.ats?.length ||
       entry.faces?.length
@@ -178,6 +181,7 @@ const PART_TYPES = [
   { key: "image", label: "图片", addLabel: "图片", placeholder: "images/a.jpg" },
   { key: "voice", label: "语音", addLabel: "语音", placeholder: "records/a.silk" },
   { key: "emoji", label: "表情", addLabel: "表情", placeholder: "emojis/a.gif" },
+  { key: "video", label: "视频", addLabel: "视频", placeholder: "videos/a.mp4" },
   { key: "qqface", label: "QQ表情", addLabel: "QQ表情", placeholder: "face id，如 13" },
   { key: "music", label: "音乐", addLabel: "音乐" },
 ];
@@ -210,7 +214,7 @@ function partHasContent(part) {
   if (part.type === "text") return !!(part.text || "").trim();
   if (part.type === "music") return !!(part.musicId || "").trim();
   if (part.type === "qqface") return String(part.faceId ?? "").trim() !== "";
-  if (part.type === "image" || part.type === "voice" || part.type === "emoji") {
+  if (part.type === "image" || part.type === "voice" || part.type === "emoji" || part.type === "video") {
     return !!(part.paths || "").trim();
   }
   return false;
@@ -221,7 +225,7 @@ function entryPartFromJson(part) {
   const type = rawType === "face" ? "qqface" : rawType;
   const rowPart = createEmptyPart(type);
   if (type === "text") rowPart.text = encodeTextForEditor(part.text || "");
-  if (type === "image" || type === "voice" || type === "emoji") {
+  if (type === "image" || type === "voice" || type === "emoji" || type === "video") {
     const file = part.file || "";
     rowPart.paths = file ? normalizeMediaPath(type, file.includes("/") ? file : `${REPLY_KINDS[type].prefix}${file}`) : "";
   }
@@ -265,6 +269,14 @@ function legacySegmentsFromEntry(entry) {
       segments.push({
         ...createEmptyPart("emoji"),
         paths: normalizeMediaPath("emoji", emoji.file.includes("/") ? emoji.file : `emojis/${emoji.file}`),
+      });
+    }
+  }
+  for (const video of entry.videos || []) {
+    if (video?.file) {
+      segments.push({
+        ...createEmptyPart("video"),
+        paths: normalizeMediaPath("video", video.file.includes("/") ? video.file : `videos/${video.file}`),
       });
     }
   }
@@ -335,13 +347,14 @@ function entryHasReplyType(entry, type) {
   if (type === "image") return segments.some((p) => p.type === "image");
   if (type === "voice") return segments.some((p) => p.type === "voice");
   if (type === "emoji") return segments.some((p) => p.type === "emoji");
+  if (type === "video") return segments.some((p) => p.type === "video");
   if (type === "music") return segments.some((p) => p.type === "music");
   return true;
 }
 function partToJson(part) {
   const out = { type: part.type === "qqface" ? "face" : part.type };
   if (part.type === "text") out.text = decodeTextFromEditor(part.text);
-  if (part.type === "image" || part.type === "voice" || part.type === "emoji") {
+  if (part.type === "image" || part.type === "voice" || part.type === "emoji" || part.type === "video") {
     const file = basename(normalizeMediaPath(part.type, splitPaths(part.paths)[0] || ""));
     if (file) out.file = file;
   }
@@ -401,6 +414,7 @@ function rowToEntry(row) {
     ats: [],
     faces: [],
     emojis: [],
+    videos: [],
     music_cards: [],
   };
 }
@@ -444,6 +458,7 @@ function rowHasContentType(row, type) {
       if (type === "image") return part.type === "image" && !!(part.paths || "").trim();
       if (type === "voice") return part.type === "voice" && !!(part.paths || "").trim();
       if (type === "emoji") return part.type === "emoji" && !!(part.paths || "").trim();
+      if (type === "video") return part.type === "video" && !!(part.paths || "").trim();
       if (type === "music") return part.type === "music" && !!(part.musicId || "").trim();
       return false;
     })
@@ -592,6 +607,7 @@ function summarizeEntry(entry) {
         if (segment.type === "image" && segment.file) preview.push(`[图 ${segment.file}]`);
         if (segment.type === "voice" && segment.file) preview.push(`[语音 ${segment.file}]`);
         if (segment.type === "emoji" && segment.file) preview.push(`[表情 ${segment.file}]`);
+        if (segment.type === "video" && segment.file) preview.push(`[视频 ${segment.file}]`);
         if (segment.type === "face" && segment.id != null) preview.push(`[QQ表情 ${segment.id}]`);
         if (segment.type === "music" && segment.id) preview.push(`[音乐 ${segment.platform}:${segment.id}]`);
       }
@@ -607,11 +623,13 @@ function summarizeEntry(entry) {
       if (segment.type === "image" && segment.file) parts.push(`[图 ${segment.file}]`);
       if (segment.type === "voice" && segment.file) parts.push(`[语音 ${segment.file}]`);
       if (segment.type === "emoji" && segment.file) parts.push(`[表情 ${segment.file}]`);
+      if (segment.type === "video" && segment.file) parts.push(`[视频 ${segment.file}]`);
       if (segment.type === "face" && segment.id != null) parts.push(`[QQ表情 ${segment.id}]`);
       if (segment.type === "music" && segment.id) parts.push(`[音乐 ${segment.platform}:${segment.id}]`);
     }
     if (!ordered.length && entry.text) parts.push(encodeTextForEditor(entry.text).slice(0, 36));
     if (!ordered.length && entry.images?.length) parts.push(`[图片 ${entry.images.map((x) => x.file).join(",")}]`);
+    if (!ordered.length && entry.videos?.length) parts.push(`[视频 ${entry.videos.map((x) => x.file).join(",")}]`);
   }
   return parts.join(" ") || "[空]";
 }

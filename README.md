@@ -4,7 +4,7 @@
 
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](LICENSE)
 [![MaiBot SDK](https://img.shields.io/badge/MaiBot%20SDK-2.x-green.svg)](https://github.com/MaiM-with-u/MaiBot)
-[![Version](https://img.shields.io/badge/version-1.1.1-orange.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.1.2-orange.svg)](CHANGELOG.md)
 
 ---
 
@@ -29,7 +29,7 @@
 | 能力 | 说明 |
 |------|------|
 | 双模式触发 | **关键词**：整条消息首词精确匹配；**检测词**：消息包含即触发 |
-| 富媒体回复 | 文本、图片、语音、表情、音乐卡片、At，支持引用消息导入 |
+| 富媒体回复 | 文本、图片、视频、语音、表情、音乐卡片、At，支持引用消息导入 |
 | 有序多段回复 | 单条 entry 内按 `parts` 顺序分多条消息发送 |
 | 多回复抽取 | 先按 `weight` 加权随机，再按 `probability` 判定是否回复 |
 | 正则匹配 | 关键词 / 检测词均支持正则，内置 ReDoS 安全检查 |
@@ -56,10 +56,12 @@ data/plugins/maibot_plugin.keywords_reply/
 ├── images/            # 词库永久图片（不自动清理）
 ├── records/           # 词库永久语音（不自动清理）
 ├── emojis/            # 词库永久表情（不自动清理）
+├── videos/            # 词库永久视频（不自动清理）
 └── media_cache/       # 入站临时缓存（before_process）
     ├── images/
     ├── records/
-    └── emojis/
+    ├── emojis/
+    └── videos/
 ```
 
 ### 基本用法
@@ -138,7 +140,7 @@ python editor/server.py --data-dir "你的MaiBot/data/plugins/maibot_plugin.keyw
 - 回复正文可省略，直接**引用一条消息**作为内容。
 - 文本中可用 `[@12345]` 转义保存 At。
 - 音乐平台默认 `163`（网易云），可选 `qq` / `migu` / `kugou` / `kuwo`。
-- 图片 / 语音 / 音乐卡片：在同条消息附图，或引用对应消息后发命令；语音需在 `media_cache.group_whitelist` 群内提前缓存。
+- 图片 / 视频 / 语音 / 音乐卡片：在同条消息附带，或引用对应消息后发命令；语音与视频需在 `media_cache.group_whitelist` 群内提前缓存。
 
 ---
 
@@ -197,6 +199,7 @@ group_whitelist = ["673486917"]  # 填入需要引用导入媒体的测试群
 | `images/` | 词库永久图片（不自动清理） |
 | `records/` | 词库永久语音（不自动清理） |
 | `emojis/` | 词库永久表情（不自动清理） |
+| `videos/` | 词库永久视频（不自动清理） |
 | `media_cache/` | 入站临时媒体缓存；总数超过 100 时滚动删最旧；写入词库时提升到永久目录 |
 
 entry 结构示例：

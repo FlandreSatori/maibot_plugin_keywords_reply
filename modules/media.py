@@ -10,6 +10,7 @@ MaiBot 出站消息段格式（见 host message_utils）::
     {"type": "image", "content": <base64>}
     {"type": "emoji", "content": <base64>}
     {"type": "voice", "content": <base64>}
+    {"type": "dict", "data": {"type": "video", "data": {"file": "base64://..."}}}
     {"type": "at", "data": {"target_user_id": "123", "target_user_nickname": "昵称"}}
     {"type": "reply", "data": {"target_message_id": "..."}}
 """
@@ -107,7 +108,7 @@ def _looks_like_base64(value: str) -> bool:
 
 
 def _extract_nested_media_segment(seg: dict) -> Optional[tuple[str, dict]]:
-    """从 ``dict`` 包装段中解析嵌套的图片/表情/语音段。"""
+    """从 ``dict`` 包装段中解析嵌套的图片/表情/语音/视频段。"""
 
     if str(seg.get("type", "")).strip().lower() != "dict":
         return None
@@ -115,9 +116,45 @@ def _extract_nested_media_segment(seg: dict) -> Optional[tuple[str, dict]]:
     if not isinstance(data, dict):
         return None
     inner_type = str(data.get("type", "")).strip().lower()
-    if inner_type in {"image", "emoji", "voice", "record"}:
+    if inner_type in {"image", "emoji", "voice", "record", "video"}:
         return inner_type, data
+    if _looks_like_video_payload(data):
+        return "video", data
     return None
+
+
+def _looks_like_video_payload(payload: Any) -> bool:
+    """判断 dict 是否像 OneBot/NapCat 视频段负载（MaiBot 可能丢掉外层 type=video）。"""
+
+    if not isinstance(payload, dict):
+        return False
+    if str(payload.get("type") or "").strip().lower() == "video":
+        return True
+    file_name = str(payload.get("file") or payload.get("path") or "").strip().lower()
+    url = str(payload.get("url") or "").strip().lower()
+    path_part = url.split("?", 1)[0]
+    video_exts = (".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v")
+    if any(file_name.endswith(ext) for ext in video_exts):
+        return True
+    if any(path_part.endswith(ext) for ext in video_exts):
+        return True
+    # NapCat 群视频：file 常为 hash.mp4，url 指向 multimedia，并带 file_size
+    if payload.get("file_size") is not None and (url.startswith("http://") or url.startswith("https://")):
+        if "multimedia" in url or "orgfmt=t264" in url or "video" in url:
+            return True
+        if file_name and not file_name.startswith(("http://", "https://", "base64://", "data:")):
+            return True
+    return False
+
+
+def _video_suffix_from_name(name: str) -> str:
+    """从文件名推断视频后缀，默认 ``.mp4``。"""
+
+    lowered = str(name or "").strip().lower().split("?", 1)[0]
+    for ext in (".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v"):
+        if lowered.endswith(ext):
+            return ext
+    return ".mp4"
 
 
 def _unwrap_message_payload(raw: Any) -> Optional[Dict[str, Any]]:
@@ -145,40 +182,85 @@ def _segments_of(message: Any) -> List[dict]:
     return segments if isinstance(segments, list) else []
 
 
-def _download_url_base64(url: str) -> str:
+def _download_url_base64(url: str, *, timeout: int = 15) -> str:
     """尽力从 HTTP(S) URL 下载资源并转为 base64。"""
 
     normalized = str(url or "").strip()
     if not normalized.startswith(("http://", "https://")):
         return ""
     try:
-        with urllib_request.urlopen(normalized, timeout=15) as resp:
+        with urllib_request.urlopen(normalized, timeout=timeout) as resp:
             return base64.b64encode(resp.read()).decode("utf-8")
     except Exception as exc:
         logger.warning(f"下载媒体失败: {normalized[:120]} error={exc}")
         return ""
 
 
-def _resolve_segment_binary_base64(seg: dict) -> str:
+def _candidate_media_urls(seg: dict) -> List[str]:
+    """从消息段中收集可用于下载的 URL / base64 引用。"""
+
+    candidates: List[str] = []
+    seen: set[str] = set()
+
+    def add(value: Any) -> None:
+        text = str(value or "").strip()
+        if not text or text in seen:
+            return
+        seen.add(text)
+        candidates.append(text)
+
+    add(seg.get("url"))
+    data = _segment_data(seg)
+    if isinstance(data, str):
+        add(data)
+    elif isinstance(data, dict):
+        # NapCat video: data={file,url,file_size} 或 dict 包装 {type:video,data:{...}}
+        inner = data.get("data") if str(data.get("type") or "").strip().lower() == "video" else data
+        if isinstance(inner, dict):
+            add(inner.get("url"))
+            add(inner.get("file"))
+            add(inner.get("path"))
+        else:
+            add(inner)
+        add(data.get("url"))
+        add(data.get("file"))
+        add(data.get("path"))
+    return candidates
+
+
+def _resolve_segment_binary_base64(seg: dict, *, timeout: int = 15) -> str:
     """从消息段解析可用于落盘的 base64 数据。"""
 
     direct = str(seg.get("binary_data_base64", "") or "").strip()
     if direct:
         return direct
 
-    data = _segment_data(seg)
-    if isinstance(data, str):
-        normalized = data.strip()
-        if normalized.startswith(("http://", "https://")):
-            return _download_url_base64(normalized)
-        if normalized.startswith("base64://"):
-            return normalized[len("base64://") :]
-        if normalized.startswith("data:") and ";base64," in normalized:
-            return normalized.split(";base64,", 1)[1]
-        if _looks_like_base64(normalized):
-            return normalized
+    for candidate in _candidate_media_urls(seg):
+        if candidate.startswith(("http://", "https://")):
+            downloaded = _download_url_base64(candidate, timeout=timeout)
+            if downloaded:
+                return downloaded
+            continue
+        if candidate.startswith("base64://"):
+            return candidate[len("base64://") :]
+        if candidate.startswith("data:") and ";base64," in candidate:
+            return candidate.split(";base64,", 1)[1]
+        if _looks_like_base64(candidate):
+            return candidate
     return ""
 
+
+def _resolve_video_suffix(seg: dict) -> str:
+    """从视频段推断落盘后缀。"""
+
+    for candidate in _candidate_media_urls(seg):
+        if candidate.startswith(("http://", "https://", "base64://", "data:")):
+            continue
+        if "/" in candidate or "\\" in candidate:
+            return _video_suffix_from_name(candidate.split("/")[-1].split("\\")[-1])
+        if "." in candidate:
+            return _video_suffix_from_name(candidate)
+    return ".mp4"
 
 def _normalize_music_card(payload: Any) -> Optional[dict]:
     """把 OneBot 音乐段负载规范化为 ``{platform, id, title, artist}``。"""
@@ -331,15 +413,32 @@ def _append_media_segment(
     """把单个媒体段写入 entry 对应列表。"""
 
     normalized_type = "voice" if seg_type == "record" else seg_type
-    if normalized_type not in {"image", "emoji", "voice"}:
+    if normalized_type not in {"image", "emoji", "voice", "video"}:
         return
-    b64 = _resolve_segment_binary_base64(seg)
-    media_key = {"image": "images", "emoji": "emojis", "voice": "records"}[normalized_type]
+    timeout = 60 if normalized_type == "video" else 15
+    b64 = _resolve_segment_binary_base64(seg, timeout=timeout)
+    media_key = {
+        "image": "images",
+        "emoji": "emojis",
+        "voice": "records",
+        "video": "videos",
+    }[normalized_type]
     if not b64:
         return
-    filename = store.save_media_base64(media_key, b64, to_cache=to_cache)
+    suffix = _resolve_video_suffix(seg) if normalized_type == "video" else ""
+    filename = store.save_media_base64(media_key, b64, suffix=suffix, to_cache=to_cache)
     if filename:
         entry[media_key].append({"file": filename})
+
+
+def _build_video_send_segment(b64: str) -> Optional[dict]:
+    """构造 NapCat/OneBot 可识别的视频发送段（经 ``dict`` 包装）。"""
+
+    normalized = str(b64 or "").strip()
+    if not normalized:
+        return None
+    file_ref = normalized if normalized.startswith("base64://") else f"base64://{normalized}"
+    return {"type": "dict", "data": {"type": "video", "data": {"file": file_ref}}}
 
 
 def _strip_music_share_text(text: str) -> str:
@@ -407,12 +506,15 @@ def _raw_segment_to_part_segment(
                 }
         return None
 
-    if seg_type in ("image", "emoji", "voice", "record"):
+    if seg_type in ("image", "emoji", "voice", "record", "video"):
         media_entry = store.empty_entry()
         _append_media_segment(media_entry, store, seg_type, seg, to_cache=to_cache)
-        media_key = {"image": "images", "emoji": "emojis", "voice": "records"}[
-            "voice" if seg_type in {"voice", "record"} else seg_type
-        ]
+        media_key = {
+            "image": "images",
+            "emoji": "emojis",
+            "voice": "records",
+            "video": "videos",
+        }["voice" if seg_type in {"voice", "record"} else seg_type]
         files = media_entry.get(media_key) or []
         if not files:
             return None
@@ -498,7 +600,7 @@ def build_entry_from_segments(
                 nickname = str(data.get("target_user_nickname", "") or "")
                 if uid:
                     entry["ats"].append({"user_id": uid, "nickname": nickname, "all": uid.lower() == "all"})
-        elif seg_type in ("image", "emoji", "voice", "record"):
+        elif seg_type in ("image", "emoji", "voice", "record", "video"):
             _append_media_segment(entry, store, seg_type, seg, to_cache=to_cache)
         elif seg_type == "music":
             _append_music_card(entry, music_card)
@@ -689,6 +791,7 @@ def sanitize_entry_text(entry: dict, store: KeywordsStore) -> dict:
         entry.get("images")
         or entry.get("records")
         or entry.get("emojis")
+        or entry.get("videos")
         or entry.get("music_cards")
         or entry.get("faces")
         or any(
@@ -1058,12 +1161,18 @@ def _part_to_segments(
         "emoji": "emojis",
         "voice": "records",
         "record": "records",
+        "video": "videos",
     }.get(part_type)
     if media_key:
         b64 = store.read_media_base64(media_key, str(part.get("file") or ""))
         if b64:
-            segment_type = "voice" if part_type in {"voice", "record"} else part_type
-            segments.append({"type": segment_type, "content": b64})
+            if part_type == "video":
+                video_segment = _build_video_send_segment(b64)
+                if video_segment:
+                    segments.append(video_segment)
+            else:
+                segment_type = "voice" if part_type in {"voice", "record"} else part_type
+                segments.append({"type": segment_type, "content": b64})
     return segments
 
 
@@ -1137,6 +1246,12 @@ def build_send_segments(
         b64 = store.read_media_base64("records", (voice or {}).get("file", ""))
         if b64:
             segments.append({"type": "voice", "content": b64})
+
+    for video in entry.get("videos", []):
+        b64 = store.read_media_base64("videos", (video or {}).get("file", ""))
+        video_segment = _build_video_send_segment(b64 or "")
+        if video_segment:
+            segments.append(video_segment)
 
     return segments
 

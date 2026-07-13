@@ -34,6 +34,7 @@
       "ats": [{"user_id": "123", "nickname": "", "all": false}],
       "faces": [{"id": 1}],
       "emojis": [{"file": "abc.gif"}],   # 表情包（sticker）
+      "videos": [{"file": "abc.mp4"}],   # 视频，data_dir/videos
       "music_cards": [{"platform": "163", "id": "28481103", "title": "", "artist": ""}]
     }
 """
@@ -58,6 +59,7 @@ _MEDIA_DIRS = {
     "images": "images",
     "records": "records",
     "emojis": "emojis",
+    "videos": "videos",
 }
 
 # before_process 入站缓存子目录（与永久媒体隔离）
@@ -70,6 +72,7 @@ _MEDIA_SUFFIX = {
     "images": ".jpg",
     "records": ".amr",
     "emojis": ".gif",
+    "videos": ".mp4",
 }
 
 
@@ -151,6 +154,7 @@ class KeywordsStore:
                     entry.setdefault("ats", [])
                     entry.setdefault("faces", [])
                     entry.setdefault("emojis", [])
+                    entry.setdefault("videos", [])
                     entry.setdefault("music_cards", [])
                     KeywordsStore._sanitize_entry_fields(entry)
         return data
@@ -192,7 +196,7 @@ class KeywordsStore:
         KeywordsStore._sanitize_entry_fields(entry)
         if clear_legacy:
             entry["text"] = ""
-            for key in ("images", "records", "ats", "faces", "emojis", "music_cards"):
+            for key in ("images", "records", "ats", "faces", "emojis", "videos", "music_cards"):
                 entry[key] = []
         return True
 
@@ -210,7 +214,7 @@ class KeywordsStore:
             entry["weight"] = 100
 
     async def save(self) -> None:
-        """原子写入 JSON。永久媒体目录（images/records/emojis）永不自动清理。"""
+        """原子写入 JSON。永久媒体目录（images/records/emojis/videos）永不自动清理。"""
 
         async with self._save_lock:
             self.data_version += 1
@@ -245,7 +249,7 @@ class KeywordsStore:
     ) -> Optional[str]:
         """将二进制内容按内容哈希落盘，返回文件名（去重）。
 
-        ``to_cache=True`` 写入 ``media_cache/``；否则写入永久 ``images/records/emojis/``。
+        ``to_cache=True`` 写入 ``media_cache/``；否则写入永久 ``images/records/emojis/videos/``。
         """
 
         dirs = self.cache_dirs if to_cache else self.media_dirs
@@ -373,6 +377,7 @@ class KeywordsStore:
                     "voice": "records",
                     "record": "records",
                     "emoji": "emojis",
+                    "video": "videos",
                 }.get(seg_type)
                 if not media_key:
                     continue
@@ -419,6 +424,7 @@ class KeywordsStore:
             "ats": [],
             "faces": [],
             "emojis": [],
+            "videos": [],
             "music_cards": [],
         }
 
@@ -457,6 +463,8 @@ class KeywordsStore:
         if part_type in {"voice", "record"}:
             return bool((part.get("file") or "").strip())
         if part_type == "emoji":
+            return bool((part.get("file") or "").strip())
+        if part_type == "video":
             return bool((part.get("file") or "").strip())
         if part_type == "music":
             return bool(str(part.get("id") or "").strip())
@@ -531,6 +539,9 @@ class KeywordsStore:
         for voice in entry.get("records", []):
             if isinstance(voice, dict) and (voice.get("file") or "").strip():
                 segments.append({"type": "voice", "file": str(voice.get("file") or "").strip()})
+        for video in entry.get("videos", []):
+            if isinstance(video, dict) and (video.get("file") or "").strip():
+                segments.append({"type": "video", "file": str(video.get("file") or "").strip()})
         if not segments:
             return []
         return [KeywordsStore.make_message_part(segments)]
@@ -560,6 +571,7 @@ class KeywordsStore:
             or entry.get("ats")
             or entry.get("faces")
             or entry.get("emojis")
+            or entry.get("videos")
             or entry.get("music_cards")
         )
 
@@ -582,7 +594,7 @@ class KeywordsStore:
         else:
             merged_text = primary_text or secondary_text
         merged = {"text": merged_text}
-        for key in ("images", "records", "ats", "faces", "emojis", "music_cards"):
+        for key in ("images", "records", "ats", "faces", "emojis", "videos", "music_cards"):
             merged[key] = list(primary.get(key, [])) + list(secondary.get(key, []))
         return merged
 
@@ -629,6 +641,8 @@ class KeywordsStore:
             placeholders.append("[语音]")
         if entry.get("emojis"):
             placeholders.append("[表情]")
+        if entry.get("videos"):
+            placeholders.append("[视频]")
         if entry.get("ats"):
             placeholders.append("[@]")
         if entry.get("faces"):
@@ -650,6 +664,8 @@ class KeywordsStore:
             lines.append(f"[语音 x{len(entry['records'])}]")
         if entry.get("emojis"):
             lines.append(f"[表情 x{len(entry['emojis'])}]")
+        if entry.get("videos"):
+            lines.append(f"[视频 x{len(entry['videos'])}]")
         if entry.get("ats"):
             lines.append(f"[@ x{len(entry['ats'])}]")
         if entry.get("music_cards"):
