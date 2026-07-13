@@ -105,13 +105,25 @@ function basename(path) {
   return normalized.split("/").pop() || "";
 }
 
-function normalizeMediaPath(kind, rawPath) {
+function mediaDirPrefix(kind) {
+  return REPLY_KINDS[kind]?.prefix || "";
+}
+
+/** 编辑器只展示/编辑文件名；目录由类型决定，保存时仍只写 basename。 */
+function toMediaFilename(kind, rawPath) {
   const text = String(rawPath || "").trim().replace(/\\/g, "/");
   if (!text) return "";
-  const cfg = REPLY_KINDS[kind];
-  if (!cfg) return text;
-  if (text.includes("/")) return text;
-  return `${cfg.prefix}${text}`;
+  const prefix = mediaDirPrefix(kind);
+  if (prefix && text.toLowerCase().startsWith(prefix.toLowerCase())) {
+    return basename(text.slice(prefix.length));
+  }
+  return basename(text);
+}
+
+function normalizeMediaPath(kind, rawPath) {
+  const file = toMediaFilename(kind, rawPath);
+  if (!file) return "";
+  return `${mediaDirPrefix(kind)}${file}`;
 }
 
 function entryHasPayload(entry) {
@@ -156,13 +168,9 @@ function splitPaths(raw) {
     .filter(Boolean);
 }
 
-function mediaFilesToField(items, prefix) {
+function mediaFilesToField(items, kind) {
   return (items || [])
-    .map((item) => {
-      const file = item?.file || "";
-      if (!file) return "";
-      return file.includes("/") ? file : `${prefix}/${file}`;
-    })
+    .map((item) => toMediaFilename(kind, item?.file || ""))
     .filter(Boolean)
     .join(", ");
 }
@@ -170,7 +178,7 @@ function mediaFilesToField(items, prefix) {
 function fieldToMediaFiles(raw, kind) {
   const files = [];
   for (const part of splitPaths(raw)) {
-    const file = basename(normalizeMediaPath(kind, part));
+    const file = toMediaFilename(kind, part);
     if (file) files.push({ file });
   }
   return files;
@@ -178,10 +186,10 @@ function fieldToMediaFiles(raw, kind) {
 
 const PART_TYPES = [
   { key: "text", label: "文本", addLabel: "文本", placeholder: "回复文本，换行可用 \\r\\n" },
-  { key: "image", label: "图片", addLabel: "图片", placeholder: "images/a.jpg" },
-  { key: "voice", label: "语音", addLabel: "语音", placeholder: "records/a.silk" },
-  { key: "emoji", label: "表情", addLabel: "表情", placeholder: "emojis/a.gif" },
-  { key: "video", label: "视频", addLabel: "视频", placeholder: "videos/a.mp4" },
+  { key: "image", label: "图片", addLabel: "图片", placeholder: "a.jpg" },
+  { key: "voice", label: "语音", addLabel: "语音", placeholder: "a.silk" },
+  { key: "emoji", label: "表情", addLabel: "表情", placeholder: "a.gif" },
+  { key: "video", label: "视频", addLabel: "视频", placeholder: "a.mp4" },
   { key: "qqface", label: "QQ表情", addLabel: "QQ表情", placeholder: "face id，如 13" },
   { key: "music", label: "音乐", addLabel: "音乐" },
 ];
@@ -226,8 +234,7 @@ function entryPartFromJson(part) {
   const rowPart = createEmptyPart(type);
   if (type === "text") rowPart.text = encodeTextForEditor(part.text || "");
   if (type === "image" || type === "voice" || type === "emoji" || type === "video") {
-    const file = part.file || "";
-    rowPart.paths = file ? normalizeMediaPath(type, file.includes("/") ? file : `${REPLY_KINDS[type].prefix}${file}`) : "";
+    rowPart.paths = toMediaFilename(type, part.file || "");
   }
   if (type === "qqface") rowPart.faceId = part.id != null ? String(part.id) : "";
   if (type === "music") {
@@ -252,7 +259,7 @@ function legacySegmentsFromEntry(entry) {
     if (img?.file) {
       segments.push({
         ...createEmptyPart("image"),
-        paths: normalizeMediaPath("image", img.file.includes("/") ? img.file : `images/${img.file}`),
+        paths: toMediaFilename("image", img.file),
       });
     }
   }
@@ -260,7 +267,7 @@ function legacySegmentsFromEntry(entry) {
     if (voice?.file) {
       segments.push({
         ...createEmptyPart("voice"),
-        paths: normalizeMediaPath("voice", voice.file.includes("/") ? voice.file : `records/${voice.file}`),
+        paths: toMediaFilename("voice", voice.file),
       });
     }
   }
@@ -268,7 +275,7 @@ function legacySegmentsFromEntry(entry) {
     if (emoji?.file) {
       segments.push({
         ...createEmptyPart("emoji"),
-        paths: normalizeMediaPath("emoji", emoji.file.includes("/") ? emoji.file : `emojis/${emoji.file}`),
+        paths: toMediaFilename("emoji", emoji.file),
       });
     }
   }
@@ -276,7 +283,7 @@ function legacySegmentsFromEntry(entry) {
     if (video?.file) {
       segments.push({
         ...createEmptyPart("video"),
-        paths: normalizeMediaPath("video", video.file.includes("/") ? video.file : `videos/${video.file}`),
+        paths: toMediaFilename("video", video.file),
       });
     }
   }
@@ -355,7 +362,7 @@ function partToJson(part) {
   const out = { type: part.type === "qqface" ? "face" : part.type };
   if (part.type === "text") out.text = decodeTextFromEditor(part.text);
   if (part.type === "image" || part.type === "voice" || part.type === "emoji" || part.type === "video") {
-    const file = basename(normalizeMediaPath(part.type, splitPaths(part.paths)[0] || ""));
+    const file = toMediaFilename(part.type, splitPaths(part.paths)[0] || "");
     if (file) out.file = file;
   }
   if (part.type === "qqface") {
@@ -496,6 +503,15 @@ function renderPartContent(part) {
   }
   if (part.type === "qqface") {
     return `<input type="number" min="0" step="1" data-field="faceId" value="${escapeHtml(part.faceId || "")}" placeholder="${meta?.placeholder || ""}" />`;
+  }
+  if (part.type === "image" || part.type === "voice" || part.type === "emoji" || part.type === "video") {
+    const prefix = mediaDirPrefix(part.type);
+    const filename = toMediaFilename(part.type, part.paths || "");
+    return `
+      <div class="media-path-field" title="只需填写文件名；目录由类型固定为 ${prefix}">
+        <span class="media-path-prefix">${escapeHtml(prefix)}</span>
+        <input type="text" data-field="paths" value="${escapeHtml(filename)}" placeholder="${meta?.placeholder || ""}" spellcheck="false" />
+      </div>`;
   }
   return `<input type="text" data-field="paths" value="${escapeHtml(part.paths || "")}" placeholder="${meta?.placeholder || ""}" />`;
 }
@@ -959,7 +975,14 @@ function syncReplyRowsFromDom() {
         if (textInput) part.text = textInput.value;
 
         const pathsInput = partEl.querySelector('[data-field="paths"]');
-        if (pathsInput) part.paths = pathsInput.value;
+        if (pathsInput) {
+          // 粘贴 images/a.jpg 时自动剥掉目录，只保留文件名
+          part.paths =
+            part.type === "image" || part.type === "voice" || part.type === "emoji" || part.type === "video"
+              ? toMediaFilename(part.type, pathsInput.value)
+              : pathsInput.value;
+          if (pathsInput.value !== part.paths) pathsInput.value = part.paths;
+        }
 
         const platformInput = partEl.querySelector('[data-field="platform"]');
         if (platformInput) part.platform = platformInput.value || "163";

@@ -4,7 +4,7 @@
 
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](LICENSE)
 [![MaiBot SDK](https://img.shields.io/badge/MaiBot%20SDK-2.x-green.svg)](https://github.com/MaiM-with-u/MaiBot)
-[![Version](https://img.shields.io/badge/version-1.1.3-orange.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.1.5-orange.svg)](CHANGELOG.md)
 
 ---
 
@@ -92,6 +92,8 @@ python editor/server.py --data-dir "你的MaiBot/data/plugins/maibot_plugin.keyw
 ```
 
 浏览器访问 `http://127.0.0.1:8765`。保存后执行 `/重载词库` 或重启 MaiBot。
+
+图片 / 语音 / 表情 / 视频段只需填写文件名（如 `a.jpg`）；目录前缀由类型自动固定为 `images/`、`records/`、`emojis/`、`videos/`。
 
 ![](editor.png)
 

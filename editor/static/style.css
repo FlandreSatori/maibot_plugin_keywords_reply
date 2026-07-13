@@ -449,6 +449,35 @@ tr:hover td { background: rgba(91, 157, 255, 0.06); }
 .part-content textarea {
   width: 100%;
 }
+.media-path-field {
+  display: flex;
+  align-items: stretch;
+  min-width: 0;
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-2);
+  overflow: hidden;
+}
+.media-path-prefix {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 10px;
+  color: var(--muted);
+  background: color-mix(in srgb, var(--panel) 70%, var(--panel-2));
+  border-right: 1px solid var(--border);
+  font-family: Consolas, "Cascadia Mono", "Segoe UI Mono", monospace;
+  font-size: 0.85rem;
+  user-select: none;
+}
+.media-path-field input {
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  font-family: Consolas, "Cascadia Mono", "Segoe UI Mono", monospace;
+}
 .text-segment-input {
   min-height: 2.4em;
   resize: vertical;
