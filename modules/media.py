@@ -407,13 +407,9 @@ def _raw_segment_to_part_segment(
             "id": song_id,
         }
 
-    if seg_type == "face":
-        data = _segment_data(seg) or {}
-        if isinstance(data, dict):
-            face_id = _normalize_face_id(data.get("id"))
-            if face_id is not None:
-                return {"type": "face", "id": face_id}
-        return None
+    face_id = _extract_face_id_from_segment(seg)
+    if face_id is not None:
+        return {"type": "face", "id": face_id}
 
     if seg_type == "dict":
         nested = _extract_nested_media_segment(seg)
@@ -424,13 +420,6 @@ def _raw_segment_to_part_segment(
                 store,
                 include_text=include_text,
             )
-        data = _segment_data(seg) or {}
-        if isinstance(data, dict) and str(data.get("type", "")).lower() == "face":
-            face_data = data.get("data", data)
-            face_id = face_data.get("id") if isinstance(face_data, dict) else None
-            normalized_id = _normalize_face_id(face_id)
-            if normalized_id is not None:
-                return {"type": "face", "id": normalized_id}
         if music_card:
             song_id = str(music_card.get("id") or "").strip()
             if song_id:
@@ -481,25 +470,15 @@ def build_entry_from_segments(
             _append_media_segment(entry, store, seg_type, seg)
         elif seg_type == "music":
             _append_music_card(entry, music_card)
-        elif seg_type == "face":
-            data = _segment_data(seg) or {}
-            if isinstance(data, dict):
-                face_id = _normalize_face_id(data.get("id"))
-                if face_id is not None:
-                    entry["faces"].append({"id": face_id})
-        elif seg_type == "dict":
-            nested = _extract_nested_media_segment(seg)
-            if nested:
-                inner_type, inner_seg = nested
-                _append_media_segment(entry, store, inner_type, inner_seg)
-            else:
-                data = _segment_data(seg) or {}
-                if isinstance(data, dict) and str(data.get("type", "")).lower() == "face":
-                    face_data = data.get("data", data)
-                    face_id = face_data.get("id") if isinstance(face_data, dict) else None
-                    normalized_id = _normalize_face_id(face_id)
-                    if normalized_id is not None:
-                        entry["faces"].append({"id": normalized_id})
+        else:
+            face_id = _extract_face_id_from_segment(seg)
+            if face_id is not None:
+                entry["faces"].append({"id": face_id})
+            elif seg_type == "dict":
+                nested = _extract_nested_media_segment(seg)
+                if nested:
+                    inner_type, inner_seg = nested
+                    _append_media_segment(entry, store, inner_type, inner_seg)
                 elif music_card:
                     _append_music_card(entry, music_card)
 
@@ -564,6 +543,54 @@ def _normalize_face_id(value: Any) -> Optional[int]:
     if face_id < 0 or face_id > 99999:
         return None
     return face_id
+
+
+def _is_bare_qq_face_dict(data: dict) -> bool:
+    """判断 dict 段是否为 MaiBot 归一化后的 QQ face（仅剩 ``id`` 等少量字段）。"""
+
+    if not isinstance(data, dict) or "id" not in data:
+        return False
+    allowed_keys = {"id", "type", "raw", "summary"}
+    if not set(data.keys()).issubset(allowed_keys):
+        return False
+    inner_type = str(data.get("type", "")).strip().lower()
+    if inner_type and inner_type not in {"face", "dict"}:
+        return False
+    return _normalize_face_id(data.get("id")) is not None
+
+
+def _extract_face_id_from_segment(seg: dict) -> Optional[int]:
+    """从 raw_message 段提取 QQ face id，兼容 OneBot 与 MaiBot ``DictComponent`` 格式。"""
+
+    if not isinstance(seg, dict):
+        return None
+
+    seg_type = str(seg.get("type", "")).strip().lower()
+    if seg_type == "face":
+        data = _segment_data(seg)
+        if isinstance(data, dict):
+            normalized = _normalize_face_id(data.get("id"))
+            if normalized is not None:
+                return normalized
+        return _normalize_face_id(seg.get("id"))
+
+    if seg_type != "dict":
+        return None
+
+    data = seg.get("data")
+    if not isinstance(data, dict):
+        return None
+
+    inner_type = str(data.get("type", "")).strip().lower()
+    if inner_type == "face":
+        payload = data.get("data", data)
+        if isinstance(payload, dict):
+            return _normalize_face_id(payload.get("id"))
+        return _normalize_face_id(payload)
+
+    if _is_bare_qq_face_dict(data):
+        return _normalize_face_id(data.get("id"))
+    return None
 
 
 def sanitize_entry_faces(entry: dict) -> None:

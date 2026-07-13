@@ -296,8 +296,10 @@ class KeywordsReplyPlugin(MaiBotPlugin):
         return {str(x).strip() for x in (self.config.media_cache.group_whitelist or []) if str(x).strip()}
 
     def _should_cache_inbound_media(self, message: Dict[str, Any]) -> bool:
-        """仅对白名单群聊缓存入站媒体，避免全量消息带来的性能开销。"""
+        """对白名单群聊或管理命令消息缓存入站媒体。"""
 
+        if is_management_command_message(message):
+            return True
         whitelist = self._media_cache_group_whitelist()
         if not whitelist:
             return False
