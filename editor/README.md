@@ -7,8 +7,10 @@
 在仓库根目录执行（将 `--data-dir` 换成你的 MaiBot 插件数据目录）：
 
 ```bash
-python editor/server.py --data-dir "C:/path/to/MaiBot/data/plugins/maibot_plugin.keywords_reply"
+python editor/server.py --data-dir ".../MaiBot/data/plugins/maibot_plugin.keywords_reply"
 ```
+
+或者直接启动``editor.bat``
 
 默认监听 `http://127.0.0.1:8765`。
 

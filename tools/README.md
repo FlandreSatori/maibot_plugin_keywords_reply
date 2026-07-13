@@ -1,6 +1,6 @@
 # OhData 词库迁移工具
 
-将闭源 OhData 插件的 `database.db` 读写并导入为 MaiBot 关键词插件的 `keywords.json`。
+将OhData 插件的SQL `database.db` 读写并导入为 MaiBot 关键词插件的 `keywords.json`。
 
 ## 数据库位置
 
