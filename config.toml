@@ -5,7 +5,7 @@ config_version = "1.0.0"
 [permission]
 # 允许管理关键词/检测词的用户 ID 列表（platform:user_id 或 纯 user_id 均可）。
 # 同时，全局配置 plugin.permission 中的管理员也拥有管理权限。
-whitelist = ["1693588248"]
+whitelist = [""]
 # 无权限用户执行受限命令时是否发送“权限不足”提示；关闭后静默忽略。
 notify_permission_denied = true
 # 是否允许普通群成员使用“查看关键词列表”（仅显示当前群已启用的关键词名）。
@@ -21,7 +21,7 @@ qq_forward_all_replies = false
 # 非正则关键词/检测词匹配时是否区分大小写。
 case_sensitive = false
 # 查看列表命令每页显示的词条数量（避免消息过大）。
-list_page_size = 40
+list_page_size = 20
 
 [detect]
 # 检测词触发冷却时间（秒），0 表示不冷却。
