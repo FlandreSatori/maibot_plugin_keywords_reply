@@ -1,86 +1,242 @@
-# 关键词回复 maibot_plugin_keywords_reply
+# 关键词回复 · maibot_plugin_keywords_reply
 
-一款关键词/检测词自动回复插件，由 [AstrBot 同名插件](https://github.com/Foolllll-J/astrbot_plugin_keywords_reply) 迁移到 MaiBot SDK 2.x。
+> MaiBot 关键词 / 检测词自动回复插件。由 [AstrBot 同名插件](https://github.com/Foolllll-J/astrbot_plugin_keywords_reply) 迁移至 MaiBot SDK 2.x。
 
-- **双模式触发**：关键词触发（关键词，整条消息与关键词精确匹配）与检测词触发（消息中包含检测词即触发）。
-- **多媒体回复**：文本、图片、At、语音、表情包（sticker）的组合回复，支持引用一条消息导入其内容。
-- **正则表达式**：监听/触发均支持正则，内置 ReDoS 安全检查。
-- **群聊黑白名单**：每个词条可独立设置在哪些群启用/禁用，或全局生效。
-- **变量模板**：回复文本支持 `{user_id}`、`{user_name}`、`{group_id}`、`{platform}`、`{message}`、`{date}`、`{time}`、`{datetime}` 等占位符。
-- **检测冷却**：检测词可设置触发冷却，防止刷屏。
-- **数据可外部编辑**：所有词条保存在 MaiBot 数据目录 `data/plugins/maibot_plugin.keywords_reply/keywords.json`，媒体以文件形式存放于同目录下的 `images/`、`records/`、`emojis/`。
+[![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](LICENSE)
+[![MaiBot SDK](https://img.shields.io/badge/MaiBot%20SDK-2.x-green.svg)](https://github.com/MaiM-with-u/MaiBot)
+[![Version](https://img.shields.io/badge/version-1.1.0-orange.svg)](CHANGELOG.md)
 
-> 权限说明：只有 `permission.whitelist` 中的用户，或全局配置 `plugin.permission` 中的管理员，才能执行管理命令。白名单支持 `user_id` 或 `platform:user_id` 两种写法。
+---
 
 ![](https://count.getloli.com/@FlandreSatori-keywords-reply?name=FlandreSatori-keywords-reply&theme=booru-lewd&padding=6&offset=0&align=top&scale=1&pixelated=1&darkmode=auto)
 
-## 命令一览（推荐使用插件目录下提供的外部编辑器）
+## 目录
 
-管理命令均以 `/` 开头，需具备管理权限。将下表中的“关键词”替换为“检测词”即为检测词对应命令。
+- [特性](#特性)
+- [快速开始](#快速开始)
+- [外部编辑器](#外部编辑器)
+- [管理命令](#管理命令)
+- [回复机制](#回复机制)
+- [配置说明](#配置说明)
+- [数据目录](#数据目录)
+- [与 AstrBot 版差异](#与-astrbot-版差异)
+- [许可证](#许可证)
 
-| 命令 | 格式 | 说明 |
-| :-- | :-- | :-- |
-| 添加 | `/添加关键词 [-r] <关键词> <回复内容>` | 新增关键词，`-r` 表示正则；回复支持文本/图片/At/语音/表情，也可引用消息导入 |
-| 添加音乐 | `/添加音乐 <关键词> <歌曲ID> [平台]` | 直接用歌曲 ID 添加音乐卡片回复；平台默认 `163`（网易云），可选 `qq` / `migu` / `kugou` / `kuwo` |
-| 编辑 | `/编辑关键词 [-r] <序号/内容> <新关键词>` | 修改触发词或正则开关 |
-| 删除 | `/删除关键词 <序号/内容>` | 删除整个关键词及其所有回复 |
-| 启用 | `/启用关键词 <序号/内容> [群号/全局]` | 在当前群/指定群/全局启用 |
-| 禁用 | `/禁用关键词 <序号/内容> [群号/全局]` | 在当前群/指定群/全局禁用 |
-| 列表 | `/查看关键词列表`（别名 `/查看所有关键词`） | 列出全部关键词 |
-| 详情 | `/查看关键词 <序号/内容>` | 查看某关键词的完整配置与回复 |
-| 添加回复 | `/添加关键词回复 <序号/内容> [回复内容]` | 为已有关键词追加回复，可引用消息 |
-| 查看回复 | `/查看关键词回复 <序号/内容> [回复序号]` | 查看某条回复的完整内容 |
-| 编辑回复 | `/编辑关键词回复 <序号/内容> [回复序号] <新内容>` | 修改指定回复，可引用消息 |
-| 删除回复 | `/删除关键词回复 <序号/内容> [回复序号]` | 删除指定回复 |
-| 需@ | `/设置关键词需@ <序号/内容> on\|off` | 是否必须 @ 机器人才触发 |
-| 权重 | `/设置关键词权重 <序号/内容> <回复序号> <权重>` | 设置某条回复的抽取权重（默认 100） |
-| 重载 | `/重载词库` | 从磁盘重新加载 `keywords.json`（外部编辑器保存后使用） |
+---
 
-- **多回复**：先按各条 `weight` 加权随机抽取一条，再按该条 `probability`（0-100%）决定是否实际回复；`qq_forward_all_replies` 开启时仍合并转发全部。
-- **需@机器人**：`require_at_bot=true` 时，消息须包含对机器人的 `@`（`is_at`）或平台提及（`is_mentioned`）才会触发。
-- 文本中可用 `[@12345]` 转义保存一个 At，适合在当前会话无法真实艾特目标时使用。
-- 发命令时若用 QQ 的 `@` 选择器艾特某人，插件会保存真实 At，并自动去掉文本里重复的 `@昵称`。
-- 添加/编辑回复时正文可省略，直接引用一条消息作为内容。
-- **图片回复**：在同一条消息里发管理命令并附图，或引用带图消息后发命令；保存后可用 `/查看关键词 <名称>` 确认是否出现 `[图片]`。
-- **语音回复**：引用一条语音消息后发命令（回复正文可省略），保存后应出现 `[语音]`；插件会在消息入站时缓存语音二进制，因为 MaiBot 的 `get_by_id` 对历史语音通常不返回二进制。
-- **音乐卡片**：引用网易云/QQ 音乐卡片后发命令，保存后应出现 `[音乐]`；触发关键词时会按 OneBot 标准段（如 `type=163` + 歌曲 ID）重新发送卡片。也可直接使用 `/添加音乐 <关键词> <歌曲ID> [平台]`（平台默认可省略）。需将群号加入 `media_cache.group_whitelist` 才能通过引用导入；手动 ID 添加不受此限制。
-- 在开启媒体缓存的群聊（一般是你自己的测试群），在MaiBot 把图片用 VLM 转成 `[图片：...]` 文字之前，插件会提前抓取真实媒体文件。
-- 管理命令消息仍会经过主程序 VLM/ASR（可能消耗 token）。插件在 `before_process` 阶段对白名单群抢先缓存图片/语音二进制；若希望彻底不识别，请在 MaiBot 配置中关闭对应模型任务。引用**重启前**收到的旧语音可能因缓存失效而无法导入，需重新发送该语音后再引用。未加入 `media_cache.group_whitelist` 的群不会缓存媒体，引用语音/图片添加关键词可能失败。
+## 特性
 
-## 配置项
+| 能力 | 说明 |
+|------|------|
+| 双模式触发 | **关键词**：整条消息首词精确匹配；**检测词**：消息包含即触发 |
+| 富媒体回复 | 文本、图片、语音、表情、音乐卡片、At，支持引用消息导入 |
+| 有序多段回复 | 单条 entry 内按 `parts` 顺序分多条消息发送 |
+| 多回复抽取 | 先按 `weight` 加权随机，再按 `probability` 判定是否回复 |
+| 正则匹配 | 关键词 / 检测词均支持正则，内置 ReDoS 安全检查 |
+| 群聊策略 | 每词条独立白名单 / 黑名单，或全局启用 / 禁用 |
+| 变量模板 | `{user_id}` `{user_name}` `{group_id}` `{message}` `{date}` `{time}` 等 |
+| 外部编辑 | 本地 Web 编辑器 + `keywords.json`，支持 7k+ 词条分页管理 |
 
-配置位于 `config.toml`，分组说明：
+> **权限**：仅 `permission.whitelist` 或 MaiBot 全局管理员可执行管理命令。白名单支持 `user_id` 或 `platform:user_id`。
 
-- `[plugin] enabled`：插件总开关。
-- `[permission]`：`whitelist` 管理白名单；`notify_permission_denied` 无权限是否提示；`allow_group_member_list_keywords/detects` 是否允许群成员查看列表。
-- `[reply]`：`quote_reply` 引用回复；`qq_forward_all_replies` 多条回复合并转发；`case_sensitive` 非正则匹配是否区分大小写。
-- `[detect]`：`cooldown` 检测词冷却秒数；`ignore_cooldown_on_exact_match` 完全匹配时无视冷却。
-- `[template] enable_text_template`：是否启用文本变量模板。
-- `[media_cache] group_whitelist`：允许缓存入站富媒体（图片/语音/表情）的群号白名单。仅这些群的消息会在 `before_process` 阶段被缓存，供引用导入与管理命令附图使用；**默认为空（不缓存）**，需手动填入群号，例如 `group_whitelist = ["673486917"]`。
+---
 
-## 与 AstrBot 版本的差异
+## 快速开始
 
-MaiBot 与 AstrBot 的能力模型不同，本次迁移对以下功能做了调整：
+### 安装
 
-- **已移除**：
-  - *自动撤回（recall_delay）*：MaiBot 发送能力未提供撤回接口，故删除该配置与相关逻辑。
-  - *合并转发聊天记录导入（forwards）*：依赖 OneBot 专有的转发消息转存 API，MaiBot 无对应能力，已清理。
-  - *WebUI 可视化面板*：改为命令管理 + 外部 Web 编辑器（`editor/`）。
-- **实现方式变化**：
-  - 富媒体不再依赖平台文件路径，而是通过触发消息与被引用消息的二进制数据（`message.get_by_id(..., include_binary_data=True)`）捕获后本地落盘，发送时以 base64 通过 `send.hybrid`/`send.forward` 下发。
-  - 引用回复、At 均以 MaiBot 消息段（`reply`/`at`）实现。
-  - QQ 原生表情（face）为尽力支持，若适配器不支持将自动降级忽略；视频回复不再支持。
-- **触发语义**：MaiBot 消息事件不含 AstrBot 的“唤醒前缀”概念，关键词（指令触发）以“整条消息首个 token 精确匹配关键词”判定，检测词以“包含匹配”判定。两种模式仍仅在群聊生效。
-- **自动回复挂载点**：当前 MaiBot 主链默认**未启用** `ON_MESSAGE` 事件分发（`bot.py` 中相关代码被注释），因此本插件的自动回复实际挂在 `chat.receive.after_process` Hook 上；`@EventHandler(ON_MESSAGE)` 仅作未来兼容备用。
+将本仓库放入 MaiBot 插件目录，确保 `_manifest.json` 中 `id` 为 `maibot_plugin.keywords_reply`，重启 MaiBot 或在插件管理中启用。
 
-## 外部词库编辑器
+### 数据路径
 
-目录 `editor/` 提供本地 Web 界面，用于总览、筛选、搜索与批量增删改词条。
+```
+data/plugins/maibot_plugin.keywords_reply/
+├── keywords.json      # 词条数据
+├── config.toml        # 插件配置
+├── images/            # 图片
+├── records/           # 语音
+└── emojis/            # 表情
+```
 
-直接启动``editor.bat``或：
+### 基本用法
+
+1. 在群内发送管理命令（需管理员权限），例如：
+   ```
+   /添加关键词 早上好 早呀！
+   ```
+2. 或使用 [外部编辑器](#外部编辑器) 批量维护词库。
+3. 外部保存后执行 `/重载词库` 使插件读取最新数据。
+
+---
+
+## 外部编辑器
+
+目录 [`editor/`](editor/) 提供本地 Web 界面：总览、筛选、搜索、分页、批量增删改、结构化 entry 编辑。
+
+**Windows**
+
+```bat
+editor\editor.bat
+```
+
+**命令行**
 
 ```bash
 python editor/server.py --data-dir "你的MaiBot/data/plugins/maibot_plugin.keywords_reply"
 ```
 
-浏览器打开 `http://127.0.0.1:8765`。保存后执行 `/重载词库` 或重启 MaiBot。详见 [editor/README.md](editor/README.md)。
+浏览器访问 `http://127.0.0.1:8765`。保存后执行 `/重载词库` 或重启 MaiBot。
+
+详见 [editor/README.md](editor/README.md)。OhData 迁移工具见 [tools/README.md](tools/README.md)。
+
+---
+
+## 管理命令
+
+命令以 `/` 开头，需管理权限。将下表「关键词」替换为「检测词」即为检测词对应命令。
+
+### 词条管理
+
+| 命令 | 格式 |
+|------|------|
+| 添加 | `/添加关键词 [-r] <关键词> <回复内容>` |
+| 添加音乐 | `/添加音乐 <关键词> <歌曲ID> [平台]` |
+| 编辑 | `/编辑关键词 [-r] <序号/内容> <新关键词>` |
+| 删除 | `/删除关键词 <序号/内容>` |
+| 启用 | `/启用关键词 <序号/内容> [群号/全局]` |
+| 禁用 | `/禁用关键词 <序号/内容> [群号/全局]` |
+| 列表 | `/查看关键词列表`（别名 `/查看所有关键词`） |
+| 详情 | `/查看关键词 <序号/内容>` |
+| 重载 | `/重载词库` |
+
+### 回复管理
+
+| 命令 | 格式 |
+|------|------|
+| 添加回复 | `/添加关键词回复 <序号/内容> [回复内容]` |
+| 查看回复 | `/查看关键词回复 <序号/内容> [回复序号]` |
+| 编辑回复 | `/编辑关键词回复 <序号/内容> [回复序号] <新内容>` |
+| 删除回复 | `/删除关键词回复 <序号/内容> [回复序号]` |
+
+### 高级设置
+
+| 命令 | 格式 |
+|------|------|
+| 需@ | `/设置关键词需@ <序号/内容> on\|off` |
+| 权重 | `/设置关键词权重 <序号/内容> <回复序号> <权重>` |
+
+**说明**
+
+- `-r` 表示正则触发词。
+- 回复正文可省略，直接**引用一条消息**作为内容。
+- 文本中可用 `[@12345]` 转义保存 At。
+- 音乐平台默认 `163`（网易云），可选 `qq` / `migu` / `kugou` / `kuwo`。
+- 图片 / 语音 / 音乐卡片：在同条消息附图，或引用对应消息后发命令；语音需在 `media_cache.group_whitelist` 群内提前缓存。
+
+---
+
+## 回复机制
+
+### 多回复抽取
+
+同一触发词下有多条 entry 时：
+
+1. 按各条 **`weight`（权重）** 加权随机抽取一条；
+2. 再按该条 **`probability`（概率 0–100%）** 判定是否实际发送。
+
+`qq_forward_all_replies = true` 时，多条回复以合并转发形式全部发送（跳过上述随机逻辑）。
+
+### 单条 entry 多段发送
+
+entry 使用有序 `parts[]` 时，每一段单独发送一条消息，顺序与编辑器中一致。
+
+### 需@机器人
+
+`require_at_bot = true` 时，消息须包含对机器人的 `@`（`is_at`）或平台提及（`is_mentioned`）才会触发。
+
+---
+
+## 配置说明
+
+配置文件：`config.toml`
+
+| 分组 | 主要项 | 说明 |
+|------|--------|------|
+| `[plugin]` | `enabled` | 插件总开关 |
+| `[permission]` | `whitelist` | 管理白名单 |
+| | `notify_permission_denied` | 无权限时是否提示 |
+| | `allow_group_member_list_*` | 是否允许群成员查看列表 |
+| `[reply]` | `quote_reply` | 回复时引用触发消息 |
+| | `qq_forward_all_replies` | 多回复合并转发 |
+| | `case_sensitive` | 非正则是否区分大小写 |
+| `[detect]` | `cooldown` | 检测词冷却（秒） |
+| | `ignore_cooldown_on_exact_match` | 完全匹配时无视冷却 |
+| `[template]` | `enable_text_template` | 启用变量模板 |
+| `[media_cache]` | `group_whitelist` | 允许缓存入站富媒体的群号；**默认为空** |
+
+```toml
+[media_cache]
+group_whitelist = ["673486917"]  # 填入需要引用导入媒体的测试群
+```
+
+---
+
+## 数据目录
+
+| 路径 | 内容 |
+|------|------|
+| `keywords.json` | 全部词条 |
+| `images/` | 图片文件 |
+| `records/` | 语音文件 |
+| `emojis/` | 表情文件（一般是.gif） |
+
+entry 结构示例：
+
+```json
+{
+  "weight": 100,
+  "probability": 80,
+  "parts": [
+    { "type": "text", "text": "早呀！" },
+    { "type": "text", "text": "今天天气很好！" },
+    { "type": "image", "file": "abc.jpg" }
+  ]
+}
+```
+
+---
+
+## 与 AstrBot 版差异
+
+<details>
+<summary>点击展开迁移说明</summary>
+
+### 已移除
+
+- 自动撤回（`recall_delay`）—— MaiBot 无撤回接口
+- 合并转发聊天记录导入（`forwards`）—— 无对应 API
+- 内置 WebUI —— 改为 `editor/` 外部编辑器
+
+### 实现变化
+
+- 富媒体通过入站二进制落盘，发送时用 `send.hybrid` / `send.forward`
+- 引用回复、At 使用 MaiBot 消息段（`reply` / `at`）
+- QQ 原生表情（face）尽力支持；视频回复不再支持
+
+### 触发挂载点
+
+自动回复挂在 `chat.receive.after_process` Hook；`ON_MESSAGE` 事件处理器仅作未来兼容备用。
+
+</details>
+
+---
+
+## 许可证
+
+基于 [astrbot_plugin_keywords_reply](https://github.com/Foolllll-J/astrbot_plugin_keywords_reply) 迁移，遵循相同开源协议。
+
+---
+
+<p align="center">
+  <sub>迁移自 AstrBot · 运行于 <a href="https://github.com/MaiM-with-u/MaiBot">MaiBot</a></sub>
+</p>
