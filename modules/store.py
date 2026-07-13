@@ -62,7 +62,12 @@ _MEDIA_DIRS = {
     "videos": "videos",
 }
 
-# before_process 入站缓存子目录（与永久媒体隔离）
+# before_process 入站缓存子目录（与永久媒体隔离；不含 videos：视频仅本地加载）
+_MEDIA_CACHE_DIRS = {
+    "images": "images",
+    "records": "records",
+    "emojis": "emojis",
+}
 _MEDIA_CACHE_ROOT = "media_cache"
 # media_cache 滚动上限：总文件数超过该值时按 mtime 删最旧的
 _MEDIA_CACHE_MAX_FILES = 100
@@ -87,7 +92,7 @@ class KeywordsStore:
         }
         self.cache_root = self.data_dir / _MEDIA_CACHE_ROOT
         self.cache_dirs: Dict[str, Path] = {
-            key: self.cache_root / sub for key, sub in _MEDIA_DIRS.items()
+            key: self.cache_root / sub for key, sub in _MEDIA_CACHE_DIRS.items()
         }
         self._save_lock = asyncio.Lock()
         self.data: Dict[str, List[dict]] = {"command_triggered": [], "auto_detect": []}
@@ -334,6 +339,10 @@ class KeywordsStore:
         name = os.path.basename(str(filename or "").strip())
         if not name or media_key not in _MEDIA_DIRS:
             return None
+        if media_key not in self.cache_dirs:
+            # 无入站缓存目录的类型（如 videos）：仅校验永久目录是否已有文件
+            permanent_path = self.media_dirs[media_key] / name
+            return name if permanent_path.is_file() else None
         cache_path = self.cache_dirs[media_key] / name
         permanent_path = self.media_dirs[media_key] / name
         try:

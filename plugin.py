@@ -39,10 +39,8 @@ from .modules.media import (
     capture_media_from_trigger,
     extract_inline_ats,
     is_management_command_message,
-    message_has_video_like_segment,
     normalize_music_platform,
     sanitize_entry_text,
-    summarize_raw_message_types,
     supported_music_platforms_text,
 )
 from .modules.store import KeywordsStore
@@ -158,7 +156,7 @@ class MediaCacheConfig(PluginConfigBase):
 
     group_whitelist: list[str] = Field(
         default_factory=list,
-        description="允许缓存入站富媒体（图片/语音/表情/视频）的群号白名单；为空时不缓存普通消息（管理命令仍会缓存）",
+        description="允许缓存入站富媒体（图片/语音/表情）的群号白名单；为空时不缓存普通消息（管理命令仍会缓存）。视频不走入站缓存。",
     )
 
 
@@ -1047,66 +1045,29 @@ class KeywordsReplyPlugin(MaiBotPlugin):
 
         无法修改 MaiBot 主程序时，只能在此 Hook（位于 process 之前）抢先缓存媒体。
         历史语音经 ``get_by_id`` 通常不带二进制，因此还需缓存每条入站语音供引用导入。
-        视频在 MaiBot 中通常是 ``type:file``（仅 name/size/url，无 binary），需在此下载落盘。
+        视频不在此缓存：仅支持本地 ``videos/`` 加载后发送。
         """
 
         del kwargs
         if not isinstance(message, dict):
             return {"action": "continue"}
-
-        segments = message.get("raw_message", []) or []
-        type_summary = summarize_raw_message_types(segments)
-        group_id = self._extract_group_id(message)
-
         if not self._should_cache_inbound_media(message):
-            if message_has_video_like_segment(segments):
-                whitelist = sorted(self._media_cache_group_whitelist())
-                self.ctx.logger.warning(
-                    "视频/文件未缓存：群 %s 不在 media_cache.group_whitelist（当前=%s）；segments=%s",
-                    group_id or "-",
-                    whitelist or "[]",
-                    type_summary,
-                )
             return {"action": "continue"}
 
         message_id = str(message.get("message_id", "") or "").strip()
         if not message_id:
             return {"action": "continue"}
 
-        self.ctx.logger.info(
-            "媒体缓存开始: message_id=%s group=%s segments=%s",
-            message_id,
-            group_id or "-",
-            type_summary,
-        )
         try:
             cached = await asyncio.to_thread(capture_media_from_message_dict, message, self.store)
         except Exception as exc:
             self.ctx.logger.error(f"媒体缓存异常: message_id={message_id} error={exc}", exc_info=True)
             return {"action": "continue"}
 
-        video_count = len(cached.get("videos") or [])
-        image_count = len(cached.get("images") or [])
-        voice_count = len(cached.get("records") or [])
-        emoji_count = len(cached.get("emojis") or [])
         if self.store.entry_has_payload(cached):
             self._remember_inbound_media(message_id, cached)
-            self.ctx.logger.info(
-                "媒体已缓存: message_id=%s videos=%d images=%d voices=%d emojis=%d → %s/media_cache/",
-                message_id,
-                video_count,
-                image_count,
-                voice_count,
-                emoji_count,
-                self.store.data_dir,
-            )
-        elif message_has_video_like_segment(segments):
-            self.ctx.logger.warning(
-                "视频/文件识别到但未写入 media_cache: message_id=%s segments=%s "
-                "（常见原因：URL 下载失败，或 NapCat 给的是已失效本地路径）",
-                message_id,
-                type_summary,
-            )
+            if is_management_command_message(message):
+                self.ctx.logger.debug(f"已缓存管理命令消息媒体: message_id={message_id}")
         return {"action": "continue"}
 
     async def _try_auto_reply(self, message: Dict[str, Any]) -> str:
