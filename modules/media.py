@@ -598,20 +598,11 @@ def _extract_face_id_from_segment(seg: dict) -> Optional[int]:
         return None
 
     inner_type = str(data.get("type", "")).strip().lower()
-    if inner_type in {"face", "mface"}:
+    if inner_type == "face":
         payload = data.get("data", data)
         if isinstance(payload, dict):
-            for key in ("id", "face_id", "face_index", "faceIndex", "index"):
-                normalized = _normalize_face_id(payload.get(key))
-                if normalized is not None:
-                    return normalized
+            return _normalize_face_id(payload.get("id"))
         return _normalize_face_id(payload)
-
-    if inner_type in {"", "dict", "face"}:
-        for key in ("id", "face_id", "face_index", "faceIndex", "index"):
-            normalized = _normalize_face_id(data.get(key))
-            if normalized is not None:
-                return normalized
 
     if _is_bare_qq_face_dict(data):
         return _normalize_face_id(data.get("id"))
@@ -829,103 +820,23 @@ def extract_reply_raw_segments_from_message(
     return reply_segments
 
 
-def _count_extractable_faces(segments: List[dict]) -> int:
-    """统计 raw_message 中可解析的 QQ face 数量。"""
-
-    count = 0
-    for seg in segments or []:
-        if isinstance(seg, dict) and _extract_face_id_from_segment(seg) is not None:
-            count += 1
-    return count
-
-
-def _prefer_raw_segments_for_reply(command_raw: List[dict], cached_raw: Optional[List[dict]]) -> List[dict]:
-    """优先使用仍保留 QQ face id 的 raw_message 快照。"""
-
-    command_raw = [seg for seg in (command_raw or []) if isinstance(seg, dict)]
-    cached_raw = [seg for seg in (cached_raw or []) if isinstance(seg, dict)]
-    if not cached_raw:
-        return command_raw
-    if not command_raw:
-        return cached_raw
-    if _count_extractable_faces(cached_raw) > _count_extractable_faces(command_raw):
-        return cached_raw
-    return command_raw
-
-
-def consolidate_inline_reply_parts(entry: dict) -> dict:
-    """把误拆成多条聊天消息的 part 合并为一条（保留 segment 顺序）。"""
-
-    if not isinstance(entry, dict):
-        return entry
-    parts = KeywordsStore.get_ordered_parts(entry)
-    if len(parts) <= 1:
-        if parts:
-            entry["parts"] = parts
-        return entry
-
-    merged_segments: List[dict] = []
-    for part in parts:
-        merged_segments.extend(KeywordsStore.get_part_segments(part))
-    if not merged_segments:
-        return entry
-
-    entry["parts"] = [KeywordsStore.make_message_part(merged_segments)]
-    entry["text"] = ""
-    for key in ("images", "records", "ats", "faces", "emojis", "music_cards"):
-        entry[key] = []
-    return entry
-
-
-def append_quoted_reply_parts(entry: dict, quoted_entry: dict, store: KeywordsStore) -> dict:
-    """把引用消息内容追加为额外聊天消息，不破坏已有内联回复结构。"""
-
-    if not isinstance(entry, dict):
-        return quoted_entry if isinstance(quoted_entry, dict) else store.empty_entry()
-    if not isinstance(quoted_entry, dict) or not store.entry_has_payload(quoted_entry):
-        return entry
-
-    inline_parts = KeywordsStore.get_ordered_parts(entry)
-    quoted_parts = KeywordsStore.get_ordered_parts(quoted_entry)
-    if not quoted_parts:
-        return entry
-    if not inline_parts:
-        merged = store.empty_entry()
-        merged["weight"] = entry.get("weight", quoted_entry.get("weight", 100))
-        merged["probability"] = entry.get("probability", quoted_entry.get("probability", 100))
-        merged["parts"] = quoted_parts
-        return merged
-
-    merged = store.empty_entry()
-    merged["weight"] = entry.get("weight", quoted_entry.get("weight", 100))
-    merged["probability"] = entry.get("probability", quoted_entry.get("probability", 100))
-    merged["parts"] = inline_parts + quoted_parts
-    return merged
-
-
-def build_command_reply_entry(
+def build_reply_entry_from_command_message(
     message: Dict[str, Any],
     store: KeywordsStore,
     *,
     command_mode: str = "",
     keyword: str = "",
     reply_text_fallback: str = "",
-    cached_raw_message: Optional[List[dict]] = None,
 ) -> dict:
-    """从命令消息构建单条聊天回复（文本与 QQ 表情按 raw_message 顺序交错）。"""
-
-    command_raw = message.get("raw_message", []) if isinstance(message, dict) else []
-    raw_segments = _prefer_raw_segments_for_reply(command_raw, cached_raw_message)
-    payload = {"raw_message": raw_segments}
+    """优先从 ``raw_message`` 按序构建回复 entry；失败时回退到命令解析出的纯文本。"""
 
     reply_segments = extract_reply_raw_segments_from_message(
-        payload,
+        message,
         command_mode=command_mode,
         keyword=keyword,
     )
     if reply_segments:
         entry = build_entry_from_segments(reply_segments, store, include_text=True)
-        entry = consolidate_inline_reply_parts(entry)
         if store.entry_has_payload(entry):
             return entry
 
@@ -967,21 +878,6 @@ async def capture_media_from_trigger(ctx: Any, store: KeywordsStore, message: Di
     return empty
 
 
-def unwrap_cached_media_entry(cached: Any, store: KeywordsStore) -> dict:
-    """从入站缓存读取 entry（兼容 ``{raw_message, entry}`` 与旧版扁平 entry）。"""
-
-    if not isinstance(cached, dict):
-        return store.empty_entry()
-    if "entry" in cached or "raw_message" in cached:
-        entry = cached.get("entry")
-        if isinstance(entry, dict) and store.entry_has_payload(entry):
-            return entry
-        return store.empty_entry()
-    if store.entry_has_payload(cached):
-        return cached
-    return store.empty_entry()
-
-
 async def capture_from_reply(
     ctx: Any,
     store: KeywordsStore,
@@ -999,7 +895,8 @@ async def capture_from_reply(
     cached_entry = empty
     if isinstance(media_cache, dict):
         cached = media_cache.get(target_id)
-        cached_entry = unwrap_cached_media_entry(cached, store)
+        if isinstance(cached, dict) and store.entry_has_payload(cached):
+            cached_entry = cached
 
     stream_id = str(message.get("session_id", "") or "").strip() if isinstance(message, dict) else ""
     segments = await _fetch_message_segments(ctx, target_id, stream_id)
