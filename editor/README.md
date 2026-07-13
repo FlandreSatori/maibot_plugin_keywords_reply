@@ -10,9 +10,31 @@
 python editor/server.py --data-dir ".../MaiBot/data/plugins/maibot_plugin.keywords_reply"
 ```
 
-或者直接启动``editor.bat``
+或者直接启动 `editor.bat`（仅本机）。
 
 默认监听 `http://127.0.0.1:8765`。
+
+### 局域网其它设备访问
+
+工作机性能不足时，可在本机启动服务，用手机 / 另一台电脑的浏览器编辑：
+
+```bash
+python editor/server.py --data-dir ".../MaiBot/data/plugins/maibot_plugin.keywords_reply" --host 0.0.0.0 --port 8765
+```
+
+或双击 `editor-lan.bat`。启动后终端会打印类似：
+
+```text
+http://192.168.x.x:8765
+```
+
+在同一局域网的其它设备浏览器打开该地址即可。
+
+注意：
+
+- 编辑器**没有登录鉴权**，仅在可信局域网使用。
+- Windows 若打不开：防火墙放行入站 TCP `8765`（专用网络即可）。
+- 数据仍写在工作机上的 `keywords.json`；保存后在 MaiBot 执行 `/重载词库`。
 
 ## 功能
 
@@ -31,7 +53,8 @@ python editor/server.py --data-dir ".../MaiBot/data/plugins/maibot_plugin.keywor
 - **回复列摘要**（显示条数 + 首条预览，不再展开全部回复）
 - **编辑弹窗内回复分页**（每页 40 条）
 
-首次加载超大 JSON 仍可能需要数秒；加载完成后翻页、筛选会流畅很多。建议用搜索缩小范围后再编辑。
+首次加载超大 JSON 仍可能需要数秒；加载完成后翻页、筛选会流畅很多。建议用搜索缩小范围后再编辑。  
+若工作机浏览器卡顿，优先用「局域网其它设备访问」在性能更好的设备上打开页面。
 
 ## 回复编辑（结构化）
 

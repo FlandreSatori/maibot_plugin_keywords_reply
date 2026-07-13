@@ -84,13 +84,23 @@ data/plugins/maibot_plugin.keywords_reply/
 editor\editor.bat
 ```
 
+局域网其它设备访问（工作机起服务，另一台设备打开浏览器）：
+
+```bat
+editor\editor-lan.bat
+```
+
+启动后终端会打印 `http://192.168.x.x:8765`，在同一局域网设备上打开即可（无鉴权，仅可信局域网；必要时放行防火墙 8765）。
+
 **命令行**
 
 ```bash
 python editor/server.py --data-dir "你的MaiBot/data/plugins/maibot_plugin.keywords_reply"
+# 局域网：
+python editor/server.py --data-dir "..." --host 0.0.0.0 --port 8765
 ```
 
-浏览器访问 `http://127.0.0.1:8765`。保存后执行 `/重载词库` 或重启 MaiBot。
+浏览器访问 `http://127.0.0.1:8765`（或局域网 IP）。保存后执行 `/重载词库` 或重启 MaiBot。
 
 图片 / 语音 / 表情段只需填写文件名（如 `a.jpg`）；目录前缀由类型自动固定为 `images/`、`records/`、`emojis/`。
 
