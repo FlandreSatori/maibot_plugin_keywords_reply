@@ -352,3 +352,54 @@ def describe_status_brief(cfg: dict) -> str:
     if mode == "blacklist":
         return (" [全局启用]" if not groups else f" [黑名单:{','.join(groups)}]") + at_hint
     return (" [未启用]" if not groups else f" [白名单:{','.join(groups)}]") + at_hint
+
+
+_LIST_PAGE_ARG_PATTERN = re.compile(r"^(?:第)?(\d+)(?:页)?$", re.IGNORECASE)
+
+
+def parse_list_page_arg(args: str) -> int:
+    """解析列表翻页参数，如 ``2``、``第2页``。"""
+
+    text = (args or "").strip()
+    if not text:
+        return 1
+    matched = _LIST_PAGE_ARG_PATTERN.fullmatch(text)
+    if matched:
+        return max(1, int(matched.group(1)))
+    return 1
+
+
+def paginate_slice(items: List[Any], page: int, page_size: int) -> tuple[List[Any], int, int, int]:
+    """对列表分页，返回 (当前页数据, 当前页码, 总页数, 总条数)。"""
+
+    total = len(items)
+    if total == 0:
+        return [], 1, 1, 0
+    page_size = max(1, int(page_size or 1))
+    total_pages = max(1, (total + page_size - 1) // page_size)
+    page = min(max(1, int(page or 1)), total_pages)
+    start = (page - 1) * page_size
+    return items[start : start + page_size], page, total_pages, total
+
+
+def format_list_page_hint(label: str, page: int, total_pages: int, total: int) -> str:
+    """生成分页列表页脚提示。"""
+
+    if total_pages <= 1:
+        return ""
+    next_page = page + 1 if page < total_pages else 1
+    return (
+        f"\n\n第 {page}/{total_pages} 页，共 {total} 条。"
+        f"翻页：/查看{label}列表 {next_page}"
+        + (f"（末页可输入 /查看{label}列表 1 回到首页）" if page == total_pages else "")
+    )
+
+
+def summarize_rule_for_list(cfg: dict, index: int) -> str:
+    """生成词条列表单行摘要（不含各条回复详情，避免消息过大）。"""
+
+    regex_str = " [正则]" if cfg.get("regex", False) else ""
+    entry_count = len(cfg.get("entries") or [])
+    reply_hint = f" · {entry_count}条回复" if entry_count != 1 else ""
+    keyword = str(cfg.get("keyword", "") or "")
+    return f"【{index}】 {keyword}{regex_str}{describe_status_brief(cfg)}{reply_hint}"

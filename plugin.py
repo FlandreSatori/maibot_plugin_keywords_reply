@@ -21,8 +21,11 @@ from .modules.matching import (
     Matcher,
     apply_group_toggle,
     describe_status,
-    describe_status_brief,
     find_indices,
+    format_list_page_hint,
+    paginate_slice,
+    parse_list_page_arg,
+    summarize_rule_for_list,
 )
 from .modules.media import (
     build_forward_messages,
@@ -45,6 +48,40 @@ SECTION_KEYWORD = "command_triggered"
 SECTION_DETECT = "auto_detect"
 SECTION_LABELS = {SECTION_KEYWORD: "关键词", SECTION_DETECT: "检测词"}
 MATCH_TYPE_LABELS = {SECTION_KEYWORD: "精确匹配", SECTION_DETECT: "包含匹配"}
+MAX_SEND_CHARS = 3500
+
+REPLY_HELP_TEXT = """关键词回复插件 · 帮助
+
+【常用】
+/replyhelp — 显示本帮助
+/重载词库 — 外部编辑器保存后重新加载词库
+
+【关键词 · 词条】
+/添加关键词 [-r] <词> <回复>
+/添加音乐 <词> <歌曲ID> [平台]
+/编辑关键词 [-r] <序号/内容> <新词>
+/删除关键词 <序号/内容>
+/启用关键词 <序号/内容> [群号/全局]
+/禁用关键词 <序号/内容> [群号/全局]
+/查看关键词列表 [页码]
+/查看关键词 <序号/内容>
+
+【关键词 · 回复】
+/添加关键词回复 <序号/内容> [回复]
+/查看关键词回复 <序号/内容> [回复序号]
+/编辑关键词回复 <序号/内容> [回复序号] <新内容>
+/删除关键词回复 <序号/内容> [回复序号]
+/设置关键词需@ <序号/内容> on|off
+/设置关键词权重 <序号/内容> <回复序号> <权重>
+
+【检测词】
+将上面命令中的「关键词」替换为「检测词」即可（列表命令：/查看检测词列表 [页码]）。
+
+【说明】
+· -r 表示正则触发；回复可省略正文并引用一条消息导入
+· 多条回复：先按权重抽取，再按概率判定是否发送
+· 列表支持分页，例如 /查看关键词列表 2 或 /查看关键词列表 第2页
+· 管理命令需管理员或白名单权限；词库文件可用 editor/ 外部编辑器维护"""
 
 
 # ─── 配置模型 ──────────────────────────────────────────────────
@@ -84,6 +121,7 @@ class ReplyConfig(PluginConfigBase):
     quote_reply: bool = Field(default=False, description="回复时是否引用触发消息")
     qq_forward_all_replies: bool = Field(default=False, description="多条回复时是否合并转发全部")
     case_sensitive: bool = Field(default=False, description="非正则匹配是否区分大小写")
+    list_page_size: int = Field(default=40, description="查看列表命令每页显示的词条数量")
 
 
 class DetectConfig(PluginConfigBase):
@@ -189,8 +227,36 @@ class KeywordsReplyPlugin(MaiBotPlugin):
 
     async def _send(self, stream_id: str, text: str) -> tuple[bool, str, bool]:
         if stream_id and text:
-            await self.ctx.send.text(text, stream_id)
+            for chunk in self._split_message_chunks(text, MAX_SEND_CHARS):
+                await self.ctx.send.text(chunk, stream_id)
         return True, text, True
+
+    @staticmethod
+    def _split_message_chunks(text: str, max_chars: int) -> List[str]:
+        """按行优先切分超长文本，避免单条消息超出平台长度限制。"""
+
+        if len(text) <= max_chars:
+            return [text]
+        chunks: List[str] = []
+        buffer: List[str] = []
+        size = 0
+        for line in text.split("\n"):
+            line_size = len(line) + (1 if buffer else 0)
+            if buffer and size + line_size > max_chars:
+                chunks.append("\n".join(buffer))
+                buffer = [line]
+                size = len(line)
+                continue
+            if not buffer:
+                size = len(line)
+            else:
+                size += line_size
+            buffer.append(line)
+        if buffer:
+            chunks.append("\n".join(buffer))
+        if chunks:
+            return chunks
+        return [text[:max_chars]]
 
     async def _deny(self, stream_id: str, msg: str = "权限不足。") -> tuple[bool, str, bool]:
         if self.config.permission.notify_permission_denied:
@@ -527,6 +593,8 @@ class KeywordsReplyPlugin(MaiBotPlugin):
         group_id = str(kwargs.get("group_id", "") or "")
         label = SECTION_LABELS[section]
         data = self.store.data[section]
+        page = parse_list_page_arg(self._args(kwargs))
+        page_size = max(1, int(self.config.reply.list_page_size or 40))
 
         if not await self._is_admin(kwargs.get("platform", ""), kwargs.get("user_id", "")):
             allow = (
@@ -541,22 +609,31 @@ class KeywordsReplyPlugin(MaiBotPlugin):
                 for cfg in data
                 if cfg.get("keyword") and Matcher.is_enabled_in_group(cfg, group_id)
             ]
-            res = f"当前群聊({group_id})启用的{label}:\n"
-            res += "无" if not enabled_keywords else "\n".join(f"{i}. {k}" for i, k in enumerate(enabled_keywords, 1))
+            page_items, page, total_pages, total = paginate_slice(enabled_keywords, page, page_size)
+            res = f"当前群聊({group_id})启用的{label}（第 {page}/{total_pages} 页）:\n"
+            if not page_items:
+                res += "无"
+            else:
+                start_index = (page - 1) * page_size + 1
+                res += "\n".join(f"{start_index + i}. {keyword}" for i, keyword in enumerate(page_items))
+            res += format_list_page_hint(label, page, total_pages, total)
             return await self._send(stream_id, res.strip())
 
-        res = f"{label}列表:\n"
-        if not data:
+        page_items, page, total_pages, total = paginate_slice(data, page, page_size)
+        res = f"{label}列表（第 {page}/{total_pages} 页，共 {total} 条）:\n"
+        if not page_items:
             res += "无"
         else:
-            lines = []
-            for i, cfg in enumerate(data, 1):
-                regex_str = " [正则]" if cfg.get("regex", False) else ""
-                lines.append(f"【{i}】 {cfg['keyword']}{regex_str}{describe_status_brief(cfg)}")
-                for j, entry in enumerate(cfg.get("entries", []), 1):
-                    lines.append(f"  └─ {j}. {self.store.summarize_entry(entry, 50)}")
+            start_index = (page - 1) * page_size + 1
+            lines = [summarize_rule_for_list(cfg, start_index + i) for i, cfg in enumerate(page_items)]
             res += "\n".join(lines)
+            res += "\n（使用 /查看{0} <序号> 查看回复详情）".format(label)
+        res += format_list_page_hint(label, page, total_pages, total)
         return await self._send(stream_id, res.strip())
+
+    async def _cmd_replyhelp(self, kwargs: Dict[str, Any]) -> tuple[bool, str, bool]:
+        stream_id = kwargs.get("stream_id", "")
+        return await self._send(stream_id, REPLY_HELP_TEXT.strip())
 
     async def _cmd_view(self, section: str, kwargs: Dict[str, Any]) -> tuple[bool, str, bool]:
         stream_id = kwargs.get("stream_id", "")
@@ -843,7 +920,7 @@ class KeywordsReplyPlugin(MaiBotPlugin):
     async def disable_keyword(self, **kwargs: Any):
         return await self._cmd_toggle(SECTION_KEYWORD, False, kwargs)
 
-    @Command("kr_list_keywords", description="查看关键词列表", pattern=r"/查看(?:关键词列表|所有关键词)$")
+    @Command("kr_list_keywords", description="查看关键词列表", pattern=r"/查看(?:关键词列表|所有关键词)(?:\s+(?P<args>[\s\S]+))?$")
     async def list_keywords(self, **kwargs: Any):
         return await self._cmd_list(SECTION_KEYWORD, kwargs)
 
@@ -897,7 +974,7 @@ class KeywordsReplyPlugin(MaiBotPlugin):
     async def disable_detect(self, **kwargs: Any):
         return await self._cmd_toggle(SECTION_DETECT, False, kwargs)
 
-    @Command("kr_list_detects", description="查看检测词列表", pattern=r"/查看(?:检测词列表|所有检测词)$")
+    @Command("kr_list_detects", description="查看检测词列表", pattern=r"/查看(?:检测词列表|所有检测词)(?:\s+(?P<args>[\s\S]+))?$")
     async def list_detects(self, **kwargs: Any):
         return await self._cmd_list(SECTION_DETECT, kwargs)
 
@@ -932,6 +1009,10 @@ class KeywordsReplyPlugin(MaiBotPlugin):
     @Command("kr_reload_store", description="重载词库", pattern=r"/重载词库$")
     async def reload_store(self, **kwargs: Any):
         return await self._cmd_reload_store(kwargs)
+
+    @Command("kr_reply_help", description="关键词回复帮助", pattern=r"/replyhelp$")
+    async def reply_help(self, **kwargs: Any):
+        return await self._cmd_replyhelp(kwargs)
 
     # ─── 自动回复（Hook + EventHandler 双路径） ─────────────────
 

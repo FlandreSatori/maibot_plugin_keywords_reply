@@ -107,7 +107,8 @@ python editor/server.py --data-dir "你的MaiBot/data/plugins/maibot_plugin.keyw
 | 删除 | `/删除关键词 <序号/内容>` |
 | 启用 | `/启用关键词 <序号/内容> [群号/全局]` |
 | 禁用 | `/禁用关键词 <序号/内容> [群号/全局]` |
-| 列表 | `/查看关键词列表`（别名 `/查看所有关键词`） |
+| 列表 | `/查看关键词列表`（别名 `/查看所有关键词`）`[页码]` |
+| 帮助 | `/replyhelp` |
 | 详情 | `/查看关键词 <序号/内容>` |
 | 重载 | `/重载词库` |
 
@@ -171,6 +172,7 @@ entry 使用有序 `parts[]` 时，每一段单独发送一条消息，顺序与
 | `[reply]` | `quote_reply` | 回复时引用触发消息 |
 | | `qq_forward_all_replies` | 多回复合并转发 |
 | | `case_sensitive` | 非正则是否区分大小写 |
+| | `list_page_size` | 列表命令每页词条数（默认 40） |
 | `[detect]` | `cooldown` | 检测词冷却（秒） |
 | | `ignore_cooldown_on_exact_match` | 完全匹配时无视冷却 |
 | `[template]` | `enable_text_template` | 启用变量模板 |

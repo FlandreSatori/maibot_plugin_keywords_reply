@@ -20,6 +20,8 @@ quote_reply = false
 qq_forward_all_replies = false
 # 非正则关键词/检测词匹配时是否区分大小写。
 case_sensitive = false
+# 查看列表命令每页显示的词条数量（避免消息过大）。
+list_page_size = 40
 
 [detect]
 # 检测词触发冷却时间（秒），0 表示不冷却。
