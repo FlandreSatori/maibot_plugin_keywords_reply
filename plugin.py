@@ -28,14 +28,16 @@ from .modules.matching import (
     summarize_rule_for_list,
 )
 from .modules.media import (
+    append_quoted_reply_parts,
     build_forward_messages,
     build_music_card_entry,
-    build_reply_entry_from_command_message,
+    build_command_reply_entry,
     build_send_segments,
     build_ordered_send_batches,
     capture_from_reply,
     capture_media_from_message_dict,
     capture_media_from_trigger,
+    consolidate_inline_reply_parts,
     extract_inline_ats,
     is_management_command_message,
     normalize_music_platform,
@@ -307,15 +309,38 @@ class KeywordsReplyPlugin(MaiBotPlugin):
         group_id = self._extract_group_id(message)
         return bool(group_id) and group_id in whitelist
 
-    def _remember_inbound_media(self, message_id: str, entry: dict) -> None:
-        """缓存入站消息媒体，供后续引用导入使用（如引用语音后添加关键词）。"""
+    def _remember_inbound_media(self, message_id: str, message: Dict[str, Any], entry: dict) -> None:
+        """缓存入站消息媒体与 raw_message 快照，供命令处理阶段还原 QQ 表情等段。"""
 
         if not message_id or not self.store.entry_has_payload(entry):
             return
-        self._inbound_media_cache[message_id] = entry
+        raw_message = [
+            dict(seg) for seg in (message.get("raw_message", []) or []) if isinstance(seg, dict)
+        ]
+        self._inbound_media_cache[message_id] = {
+            "raw_message": raw_message,
+            "entry": entry,
+        }
         while len(self._inbound_media_cache) > self._MEDIA_CACHE_MAX:
             oldest_key = next(iter(self._inbound_media_cache))
             del self._inbound_media_cache[oldest_key]
+
+    @staticmethod
+    def _pop_inbound_media_cache(cache: Dict[str, Any], message_id: str) -> tuple[Optional[List[dict]], Optional[dict]]:
+        """取出缓存的 raw_message 快照与解析后的 entry（兼容旧格式）。"""
+
+        if not message_id:
+            return None, None
+        cached = cache.pop(message_id, None)
+        if not isinstance(cached, dict):
+            return None, None
+        if "raw_message" in cached or "entry" in cached:
+            raw_message = cached.get("raw_message")
+            entry = cached.get("entry")
+            if isinstance(raw_message, list):
+                return raw_message, entry if isinstance(entry, dict) else None
+            return None, entry if isinstance(entry, dict) else None
+        return None, cached
 
     async def _build_entry(
         self,
@@ -327,29 +352,22 @@ class KeywordsReplyPlugin(MaiBotPlugin):
     ) -> dict:
         """从命令正文 + 触发消息媒体 + 引用消息内容构建一条 entry。"""
 
-        segment_entry = build_reply_entry_from_command_message(
+        message_id = str(message.get("message_id", "") or "").strip()
+        cached_raw, _cached_entry = self._pop_inbound_media_cache(self._inbound_media_cache, message_id)
+
+        entry = build_command_reply_entry(
             message,
             self.store,
             command_mode=command_mode,
             keyword=keyword,
             reply_text_fallback=content,
+            cached_raw_message=cached_raw,
         )
-        segment_built = self.store.uses_ordered_parts(segment_entry)
-        entry = segment_entry
 
-        message_id = str(message.get("message_id", "") or "").strip()
-        cached_media: Optional[dict] = None
-        if message_id:
-            cached = self._inbound_media_cache.pop(message_id, None)
-            if isinstance(cached, dict) and self.store.entry_has_payload(cached):
-                cached_media = cached
-
-        if not segment_built:
-            if cached_media:
-                entry = self.store.merge_entries(entry, cached_media)
-            else:
-                trigger_media = await capture_media_from_trigger(self.ctx, self.store, message)
-                entry = self.store.merge_entries(entry, trigger_media)
+        if not self.store.uses_ordered_parts(entry):
+            trigger_media = await capture_media_from_trigger(self.ctx, self.store, message)
+            entry = self.store.merge_entries(entry, trigger_media)
+            entry = consolidate_inline_reply_parts(entry)
 
         reply_imported = await capture_from_reply(
             self.ctx,
@@ -357,7 +375,7 @@ class KeywordsReplyPlugin(MaiBotPlugin):
             message,
             media_cache=self._inbound_media_cache,
         )
-        entry = self.store.merge_entries(entry, reply_imported)
+        entry = append_quoted_reply_parts(entry, reply_imported, self.store)
         return sanitize_entry_text(entry, self.store)
 
     async def _dispatch_reply(self, stream_id: str, match: dict, message: Dict[str, Any]) -> None:
@@ -1061,7 +1079,7 @@ class KeywordsReplyPlugin(MaiBotPlugin):
 
         cached = capture_media_from_message_dict(message, self.store)
         if self.store.entry_has_payload(cached):
-            self._remember_inbound_media(message_id, cached)
+            self._remember_inbound_media(message_id, message, cached)
             if is_management_command_message(message):
                 self.ctx.logger.debug(f"已缓存管理命令消息媒体: message_id={message_id}")
         return {"action": "continue"}
