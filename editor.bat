@@ -1,0 +1,1 @@
+python .\editor\server.py --data-dir ..\..\data\plugins\maibot_plugin.keywords_reply
