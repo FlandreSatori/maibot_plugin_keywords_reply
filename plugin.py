@@ -30,6 +30,7 @@ from .modules.matching import (
 from .modules.media import (
     build_forward_messages,
     build_music_card_entry,
+    build_reply_entry_from_command_message,
     build_send_segments,
     build_ordered_send_batches,
     capture_from_reply,
@@ -316,13 +317,26 @@ class KeywordsReplyPlugin(MaiBotPlugin):
             oldest_key = next(iter(self._inbound_media_cache))
             del self._inbound_media_cache[oldest_key]
 
-    async def _build_entry(self, content: str, message: Dict[str, Any]) -> dict:
+    async def _build_entry(
+        self,
+        content: str,
+        message: Dict[str, Any],
+        *,
+        command_mode: str = "",
+        keyword: str = "",
+    ) -> dict:
         """从命令正文 + 触发消息媒体 + 引用消息内容构建一条 entry。"""
 
-        entry = self.store.empty_entry()
-        plain, inline_ats = extract_inline_ats(strip_auto_media_text(content or ""))
-        entry["text"] = plain.strip()
-        entry["ats"].extend(inline_ats)
+        segment_entry = build_reply_entry_from_command_message(
+            message,
+            self.store,
+            command_mode=command_mode,
+            keyword=keyword,
+            reply_text_fallback=content,
+        )
+        segment_built = self.store.uses_ordered_parts(segment_entry)
+        entry = segment_entry
+
         message_id = str(message.get("message_id", "") or "").strip()
         cached_media: Optional[dict] = None
         if message_id:
@@ -330,11 +344,12 @@ class KeywordsReplyPlugin(MaiBotPlugin):
             if isinstance(cached, dict) and self.store.entry_has_payload(cached):
                 cached_media = cached
 
-        if cached_media:
-            entry = self.store.merge_entries(entry, cached_media)
-        else:
-            trigger_media = await capture_media_from_trigger(self.ctx, self.store, message)
-            entry = self.store.merge_entries(entry, trigger_media)
+        if not segment_built:
+            if cached_media:
+                entry = self.store.merge_entries(entry, cached_media)
+            else:
+                trigger_media = await capture_media_from_trigger(self.ctx, self.store, message)
+                entry = self.store.merge_entries(entry, trigger_media)
 
         reply_imported = await capture_from_reply(
             self.ctx,
@@ -420,7 +435,7 @@ class KeywordsReplyPlugin(MaiBotPlugin):
             except Exception as exc:
                 return await self._send(stream_id, f"无效的正则表达式: {exc}")
 
-        entry = await self._build_entry(reply_text, message)
+        entry = await self._build_entry(reply_text, message, command_mode="add", keyword=keyword)
         if not self.store.entry_has_payload(entry):
             return await self._send(stream_id, "回复内容不能为空。")
 
@@ -810,7 +825,7 @@ class KeywordsReplyPlugin(MaiBotPlugin):
 
         cfg = data[indices[0]]
         content = parts[1] if len(parts) > 1 else ""
-        entry = await self._build_entry(content, message)
+        entry = await self._build_entry(content, message, command_mode="add_reply")
         if not self.store.entry_has_payload(entry):
             return await self._send(stream_id, "回复内容不能为空。")
         cfg["entries"].append(entry)
@@ -857,7 +872,7 @@ class KeywordsReplyPlugin(MaiBotPlugin):
             reply_idx = ri - 1
             content = parts[2] if len(parts) >= 3 else ""
 
-        entry = await self._build_entry(content, message)
+        entry = await self._build_entry(content, message, command_mode="edit_reply")
         if not self.store.entry_has_payload(entry):
             return await self._send(stream_id, "回复内容不能为空。")
         cfg["entries"][reply_idx] = entry

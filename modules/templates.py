@@ -17,6 +17,7 @@ _AUTO_MEDIA_TEXT_PATTERN = re.compile(
     r"|表情[：:][^\]]*"
     r"|表情(?:\s*x\d+)?"
     r"|face(?:\s*x\d+)?"
+    r"|mface(?:\s*x\d+)?"
     r"|表情包[：:][^\]]*"
     r"|表情包"
     r"|语音[：:][^\]]*"

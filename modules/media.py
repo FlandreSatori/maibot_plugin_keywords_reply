@@ -46,6 +46,18 @@ _MUSIC_TEXT_PLACEHOLDER_PATTERN = re.compile(
 _MGMT_COMMAND_PATTERN = re.compile(
     r"/(?:添加|编辑|删除|启用|禁用|查看)(?:关键词|检测词)(?:回复)?(?:\s|$)"
 )
+_ADD_COMMAND_PREFIX = re.compile(
+    r"^/(?:添加)(?:关键词|检测词)\s+(?:-r\s+)?\S+\s+",
+    re.IGNORECASE,
+)
+_ADD_REPLY_COMMAND_PREFIX = re.compile(
+    r"^/(?:添加)(?:关键词|检测词)回复\s+\S+\s+",
+    re.IGNORECASE,
+)
+_EDIT_REPLY_COMMAND_PREFIX = re.compile(
+    r"^/(?:编辑)(?:关键词|检测词)回复\s+\S+\s+\d+\s+",
+    re.IGNORECASE,
+)
 
 
 def extract_inline_ats(text: str) -> tuple[str, List[dict]]:
@@ -572,6 +584,10 @@ def _extract_face_id_from_segment(seg: dict) -> Optional[int]:
             normalized = _normalize_face_id(data.get("id"))
             if normalized is not None:
                 return normalized
+        if data is not None and not isinstance(data, dict):
+            normalized = _normalize_face_id(data)
+            if normalized is not None:
+                return normalized
         return _normalize_face_id(seg.get("id"))
 
     if seg_type != "dict":
@@ -728,6 +744,107 @@ def is_management_command_message(message: Dict[str, Any]) -> bool:
 
     text = extract_management_command_text(message)
     return bool(text and _MGMT_COMMAND_PATTERN.search(text))
+
+
+def _strip_reply_command_prefix(
+    text: str,
+    *,
+    command_mode: str = "add",
+    keyword: str = "",
+) -> str:
+    """从首段文本中剥离管理命令前缀，保留回复正文。"""
+
+    normalized = str(text or "")
+    if not normalized:
+        return ""
+
+    if command_mode == "add" and keyword:
+        for pattern in (
+            rf"^/(?:添加)(?:关键词|检测词)\s+-r\s+{re.escape(keyword)}\s+",
+            rf"^/(?:添加)(?:关键词|检测词)\s+{re.escape(keyword)}\s+",
+        ):
+            match = re.match(pattern, normalized, re.IGNORECASE)
+            if match:
+                return normalized[match.end() :]
+
+    prefix_patterns = {
+        "add": (_ADD_COMMAND_PREFIX,),
+        "add_reply": (_ADD_REPLY_COMMAND_PREFIX,),
+        "edit_reply": (_EDIT_REPLY_COMMAND_PREFIX,),
+    }
+    for pattern in prefix_patterns.get(command_mode, ()):
+        match = pattern.match(normalized)
+        if match:
+            return normalized[match.end() :]
+    return normalized
+
+
+def extract_reply_raw_segments_from_message(
+    message: Dict[str, Any],
+    *,
+    command_mode: str = "",
+    keyword: str = "",
+) -> List[dict]:
+    """从整条命令消息的 ``raw_message`` 提取回复段，保留文本与 QQ 表情的交错顺序。"""
+
+    if not isinstance(message, dict):
+        return []
+    segments = message.get("raw_message", []) or []
+    if not isinstance(segments, list) or not segments:
+        return []
+
+    reply_segments: List[dict] = []
+    prefix_stripped = False
+
+    for seg in segments:
+        if not isinstance(seg, dict):
+            continue
+        seg_type = str(seg.get("type", "")).strip().lower()
+        if seg_type == "reply":
+            continue
+
+        if seg_type == "text" and command_mode and not prefix_stripped:
+            content = str(_segment_data(seg) or "")
+            remainder = _strip_reply_command_prefix(
+                content,
+                command_mode=command_mode,
+                keyword=keyword,
+            )
+            prefix_stripped = True
+            if remainder:
+                reply_segments.append({"type": "text", "data": remainder})
+            continue
+
+        reply_segments.append(seg)
+
+    return reply_segments
+
+
+def build_reply_entry_from_command_message(
+    message: Dict[str, Any],
+    store: KeywordsStore,
+    *,
+    command_mode: str = "",
+    keyword: str = "",
+    reply_text_fallback: str = "",
+) -> dict:
+    """优先从 ``raw_message`` 按序构建回复 entry；失败时回退到命令解析出的纯文本。"""
+
+    reply_segments = extract_reply_raw_segments_from_message(
+        message,
+        command_mode=command_mode,
+        keyword=keyword,
+    )
+    if reply_segments:
+        entry = build_entry_from_segments(reply_segments, store, include_text=True)
+        if store.entry_has_payload(entry):
+            return entry
+
+    entry = store.empty_entry()
+    plain, inline_ats = extract_inline_ats(strip_auto_media_text(reply_text_fallback or ""))
+    entry["text"] = plain.strip()
+    entry["ats"].extend(inline_ats)
+    return entry
 
 
 def capture_media_from_message_dict(message: Dict[str, Any], store: KeywordsStore) -> dict:
