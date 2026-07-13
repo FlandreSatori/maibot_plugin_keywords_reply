@@ -338,18 +338,14 @@ class KeywordsReplyPlugin(MaiBotPlugin):
         entry = segment_entry
 
         message_id = str(message.get("message_id", "") or "").strip()
-        cached_media: Optional[dict] = None
         if message_id:
             cached = self._inbound_media_cache.pop(message_id, None)
             if isinstance(cached, dict) and self.store.entry_has_payload(cached):
-                cached_media = cached
+                entry = self.store.merge_entries(entry, cached)
 
         if not segment_built:
-            if cached_media:
-                entry = self.store.merge_entries(entry, cached_media)
-            else:
-                trigger_media = await capture_media_from_trigger(self.ctx, self.store, message)
-                entry = self.store.merge_entries(entry, trigger_media)
+            trigger_media = await capture_media_from_trigger(self.ctx, self.store, message)
+            entry = self.store.merge_entries(entry, trigger_media)
 
         reply_imported = await capture_from_reply(
             self.ctx,
@@ -358,7 +354,8 @@ class KeywordsReplyPlugin(MaiBotPlugin):
             media_cache=self._inbound_media_cache,
         )
         entry = self.store.merge_entries(entry, reply_imported)
-        return sanitize_entry_text(entry, self.store)
+        entry = sanitize_entry_text(entry, self.store)
+        return self.store.promote_entry_media(entry)
 
     async def _dispatch_reply(self, stream_id: str, match: dict, message: Dict[str, Any]) -> None:
         """把命中的回复发送到聊天流。"""

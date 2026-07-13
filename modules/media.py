@@ -47,16 +47,20 @@ _MGMT_COMMAND_PATTERN = re.compile(
     r"/(?:添加|编辑|删除|启用|禁用|查看)(?:关键词|检测词)(?:回复)?(?:\s|$)"
 )
 _ADD_COMMAND_PREFIX = re.compile(
-    r"^/(?:添加)(?:关键词|检测词)\s+(?:-r\s+)?\S+\s+",
+    r"^/(?:添加)(?:关键词|检测词)\s+(?:-r\s+)?\S+(?:\s+(?P<body>[\s\S]+))?$",
     re.IGNORECASE,
 )
 _ADD_REPLY_COMMAND_PREFIX = re.compile(
-    r"^/(?:添加)(?:关键词|检测词)回复\s+\S+\s+",
+    r"^/(?:添加)(?:关键词|检测词)回复\s+\S+(?:\s+(?P<body>[\s\S]+))?$",
     re.IGNORECASE,
 )
 _EDIT_REPLY_COMMAND_PREFIX = re.compile(
-    r"^/(?:编辑)(?:关键词|检测词)回复\s+\S+\s+\d+\s+",
+    r"^/(?:编辑)(?:关键词|检测词)回复\s+\S+\s+\d+(?:\s+(?P<body>[\s\S]+))?$",
     re.IGNORECASE,
+)
+_PROCESSED_REPLY_QUOTE_PREFIX = re.compile(
+    r"^\[(?:回复了.+?的消息:\s*.+\]|回复了一条消息，但原消息已无法访问)\]\s*",
+    re.DOTALL,
 )
 
 
@@ -316,7 +320,14 @@ def _build_music_send_segment(card: dict) -> Optional[dict]:
     }
 
 
-def _append_media_segment(entry: dict, store: KeywordsStore, seg_type: str, seg: dict) -> None:
+def _append_media_segment(
+    entry: dict,
+    store: KeywordsStore,
+    seg_type: str,
+    seg: dict,
+    *,
+    to_cache: bool = False,
+) -> None:
     """把单个媒体段写入 entry 对应列表。"""
 
     normalized_type = "voice" if seg_type == "record" else seg_type
@@ -326,7 +337,7 @@ def _append_media_segment(entry: dict, store: KeywordsStore, seg_type: str, seg:
     media_key = {"image": "images", "emoji": "emojis", "voice": "records"}[normalized_type]
     if not b64:
         return
-    filename = store.save_media_base64(media_key, b64)
+    filename = store.save_media_base64(media_key, b64, to_cache=to_cache)
     if filename:
         entry[media_key].append({"file": filename})
 
@@ -348,6 +359,7 @@ def _raw_segment_to_part_segment(
     store: KeywordsStore,
     *,
     include_text: bool = True,
+    to_cache: bool = False,
 ) -> Optional[dict]:
     """把单条 raw_message 段转换为 ``parts.segments`` 内可存储的 segment dict。"""
 
@@ -397,7 +409,7 @@ def _raw_segment_to_part_segment(
 
     if seg_type in ("image", "emoji", "voice", "record"):
         media_entry = store.empty_entry()
-        _append_media_segment(media_entry, store, seg_type, seg)
+        _append_media_segment(media_entry, store, seg_type, seg, to_cache=to_cache)
         media_key = {"image": "images", "emoji": "emojis", "voice": "records"}[
             "voice" if seg_type in {"voice", "record"} else seg_type
         ]
@@ -431,6 +443,7 @@ def _raw_segment_to_part_segment(
                 {"type": inner_type, "data": _segment_data(inner_seg)},
                 store,
                 include_text=include_text,
+                to_cache=to_cache,
             )
         if music_card:
             song_id = str(music_card.get("id") or "").strip()
@@ -447,6 +460,8 @@ def build_entry_from_segments(
     segments: List[dict],
     store: KeywordsStore,
     include_text: bool = True,
+    *,
+    to_cache: bool = False,
 ) -> dict:
     """把 raw_message 段解析为 entry，保留同一条消息内的段顺序。"""
 
@@ -458,7 +473,12 @@ def build_entry_from_segments(
         if not isinstance(seg, dict):
             continue
         seg_type = str(seg.get("type", "")).strip().lower()
-        part_segment = _raw_segment_to_part_segment(seg, store, include_text=include_text)
+        part_segment = _raw_segment_to_part_segment(
+            seg,
+            store,
+            include_text=include_text,
+            to_cache=to_cache,
+        )
         if part_segment:
             ordered_segments.append(part_segment)
             if part_segment.get("type") == "text":
@@ -479,7 +499,7 @@ def build_entry_from_segments(
                 if uid:
                     entry["ats"].append({"user_id": uid, "nickname": nickname, "all": uid.lower() == "all"})
         elif seg_type in ("image", "emoji", "voice", "record"):
-            _append_media_segment(entry, store, seg_type, seg)
+            _append_media_segment(entry, store, seg_type, seg, to_cache=to_cache)
         elif seg_type == "music":
             _append_music_card(entry, music_card)
         else:
@@ -490,7 +510,7 @@ def build_entry_from_segments(
                 nested = _extract_nested_media_segment(seg)
                 if nested:
                     inner_type, inner_seg = nested
-                    _append_media_segment(entry, store, inner_type, inner_seg)
+                    _append_media_segment(entry, store, inner_type, inner_seg, to_cache=to_cache)
                 elif music_card:
                     _append_music_card(entry, music_card)
 
@@ -683,6 +703,7 @@ def sanitize_entry_text(entry: dict, store: KeywordsStore) -> dict:
         for part in entry.get("parts") or []:
             if isinstance(part, dict) and str(part.get("type") or "").strip().lower() == "text":
                 part["text"] = _strip_music_share_text(str(part.get("text") or ""))
+    _purge_management_command_text(entry)
     return entry
 
 
@@ -746,6 +767,24 @@ def is_management_command_message(message: Dict[str, Any]) -> bool:
     return bool(text and _MGMT_COMMAND_PATTERN.search(text))
 
 
+def _strip_processed_reply_quote_prefix(text: str) -> str:
+    """剥离 MaiBot 在 ``processed_plain_text`` 中注入的引用说明前缀。"""
+
+    normalized = str(text or "").strip()
+    if not normalized:
+        return ""
+    return _PROCESSED_REPLY_QUOTE_PREFIX.sub("", normalized, count=1).strip()
+
+
+def _is_management_command_text(text: str) -> bool:
+    """判断文本是否为本插件管理命令（含引用说明前缀后的命令行）。"""
+
+    normalized = _strip_processed_reply_quote_prefix(str(text or "")).strip()
+    if not normalized:
+        return False
+    return bool(re.match(r"^/(?:添加|编辑|删除|启用|禁用|查看|设置|重载)", normalized, re.IGNORECASE))
+
+
 def _strip_reply_command_prefix(
     text: str,
     *,
@@ -754,18 +793,18 @@ def _strip_reply_command_prefix(
 ) -> str:
     """从首段文本中剥离管理命令前缀，保留回复正文。"""
 
-    normalized = str(text or "")
+    normalized = _strip_processed_reply_quote_prefix(text)
     if not normalized:
         return ""
 
     if command_mode == "add" and keyword:
         for pattern in (
-            rf"^/(?:添加)(?:关键词|检测词)\s+-r\s+{re.escape(keyword)}\s+",
-            rf"^/(?:添加)(?:关键词|检测词)\s+{re.escape(keyword)}\s+",
+            rf"^/(?:添加)(?:关键词|检测词)\s+-r\s+{re.escape(keyword)}(?:\s+(?P<body>[\s\S]+))?$",
+            rf"^/(?:添加)(?:关键词|检测词)\s+{re.escape(keyword)}(?:\s+(?P<body>[\s\S]+))?$",
         ):
             match = re.match(pattern, normalized, re.IGNORECASE)
             if match:
-                return normalized[match.end() :]
+                return str(match.group("body") or "").strip()
 
     prefix_patterns = {
         "add": (_ADD_COMMAND_PREFIX,),
@@ -775,9 +814,40 @@ def _strip_reply_command_prefix(
     for pattern in prefix_patterns.get(command_mode, ()):
         match = pattern.match(normalized)
         if match:
-            return normalized[match.end() :]
+            return str(match.group("body") or "").strip()
     return normalized
 
+
+def _purge_management_command_text(entry: dict) -> None:
+    """移除误写入 entry 的管理命令文本（引用发命令时常见）。"""
+
+    if not isinstance(entry, dict):
+        return
+
+    text = str(entry.get("text") or "").strip()
+    if text and _is_management_command_text(text):
+        entry["text"] = ""
+
+    parts = entry.get("parts")
+    if not isinstance(parts, list):
+        return
+
+    cleaned_parts: List[dict] = []
+    for part in parts:
+        if not isinstance(part, dict):
+            continue
+        kept_segments: List[dict] = []
+        for seg in KeywordsStore.get_part_segments(part):
+            if not isinstance(seg, dict):
+                continue
+            if str(seg.get("type") or "").strip().lower() == "text":
+                seg_text = str(seg.get("text") or "").strip()
+                if not seg_text or _is_management_command_text(seg_text):
+                    continue
+            kept_segments.append(seg)
+        if kept_segments:
+            cleaned_parts.append(KeywordsStore.make_message_part(kept_segments))
+    entry["parts"] = cleaned_parts
 
 def extract_reply_raw_segments_from_message(
     message: Dict[str, Any],
@@ -811,7 +881,7 @@ def extract_reply_raw_segments_from_message(
                 keyword=keyword,
             )
             prefix_stripped = True
-            if remainder:
+            if remainder and not _is_management_command_text(remainder):
                 reply_segments.append({"type": "text", "data": remainder})
             continue
 
@@ -842,17 +912,27 @@ def build_reply_entry_from_command_message(
 
     entry = store.empty_entry()
     plain, inline_ats = extract_inline_ats(strip_auto_media_text(reply_text_fallback or ""))
+    if _is_management_command_text(plain):
+        plain = ""
     entry["text"] = plain.strip()
     entry["ats"].extend(inline_ats)
     return entry
 
 
 def capture_media_from_message_dict(message: Dict[str, Any], store: KeywordsStore) -> dict:
-    """从序列化消息字典捕获富媒体（用于 ``before_process`` 阶段，二进制尚未被主程序丢弃）。"""
+    """从序列化消息字典捕获富媒体（用于 ``before_process`` 阶段，二进制尚未被主程序丢弃）。
+
+    写入 ``media_cache/``，避免与词库永久媒体混用。
+    """
 
     if not isinstance(message, dict):
         return store.empty_entry()
-    return build_entry_from_segments(message.get("raw_message", []) or [], store, include_text=False)
+    return build_entry_from_segments(
+        message.get("raw_message", []) or [],
+        store,
+        include_text=False,
+        to_cache=True,
+    )
 
 
 async def capture_media_from_trigger(ctx: Any, store: KeywordsStore, message: Dict[str, Any]) -> dict:

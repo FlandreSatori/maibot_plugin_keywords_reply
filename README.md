@@ -4,7 +4,7 @@
 
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](LICENSE)
 [![MaiBot SDK](https://img.shields.io/badge/MaiBot%20SDK-2.x-green.svg)](https://github.com/MaiM-with-u/MaiBot)
-[![Version](https://img.shields.io/badge/version-1.1.0-orange.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.1.1-orange.svg)](CHANGELOG.md)
 
 ---
 
@@ -53,9 +53,13 @@
 data/plugins/maibot_plugin.keywords_reply/
 ├── keywords.json      # 词条数据
 ├── config.toml        # 插件配置
-├── images/            # 图片
-├── records/           # 语音
-└── emojis/            # 表情
+├── images/            # 词库永久图片（不自动清理）
+├── records/           # 词库永久语音（不自动清理）
+├── emojis/            # 词库永久表情（不自动清理）
+└── media_cache/       # 入站临时缓存（before_process）
+    ├── images/
+    ├── records/
+    └── emojis/
 ```
 
 ### 基本用法
@@ -190,9 +194,10 @@ group_whitelist = ["673486917"]  # 填入需要引用导入媒体的测试群
 | 路径 | 内容 |
 |------|------|
 | `keywords.json` | 全部词条 |
-| `images/` | 图片文件 |
-| `records/` | 语音文件 |
-| `emojis/` | 表情文件（一般是.gif） |
+| `images/` | 词库永久图片（不自动清理） |
+| `records/` | 词库永久语音（不自动清理） |
+| `emojis/` | 词库永久表情（不自动清理） |
+| `media_cache/` | 入站临时媒体缓存；总数超过 100 时滚动删最旧；写入词库时提升到永久目录 |
 
 entry 结构示例：
 

@@ -53,12 +53,17 @@ logger = logging.getLogger("plugin.maibot_plugin.keywords_reply")
 
 SECTIONS = ("command_triggered", "auto_detect")
 
-# entry 中媒体键 -> 存储子目录
+# entry 中媒体键 -> 存储子目录（词库永久媒体，永不自动清理）
 _MEDIA_DIRS = {
     "images": "images",
     "records": "records",
     "emojis": "emojis",
 }
+
+# before_process 入站缓存子目录（与永久媒体隔离）
+_MEDIA_CACHE_ROOT = "media_cache"
+# media_cache 滚动上限：总文件数超过该值时按 mtime 删最旧的
+_MEDIA_CACHE_MAX_FILES = 100
 
 # 媒体类型默认后缀
 _MEDIA_SUFFIX = {
@@ -77,6 +82,10 @@ class KeywordsStore:
         self.media_dirs: Dict[str, Path] = {
             key: self.data_dir / sub for key, sub in _MEDIA_DIRS.items()
         }
+        self.cache_root = self.data_dir / _MEDIA_CACHE_ROOT
+        self.cache_dirs: Dict[str, Path] = {
+            key: self.cache_root / sub for key, sub in _MEDIA_DIRS.items()
+        }
         self._save_lock = asyncio.Lock()
         self.data: Dict[str, List[dict]] = {"command_triggered": [], "auto_detect": []}
         self.data_version = 0
@@ -86,6 +95,8 @@ class KeywordsStore:
 
         self.data_dir.mkdir(parents=True, exist_ok=True)
         for path in self.media_dirs.values():
+            path.mkdir(parents=True, exist_ok=True)
+        for path in self.cache_dirs.values():
             path.mkdir(parents=True, exist_ok=True)
         self.data = self.normalize(self._load())
 
@@ -199,7 +210,7 @@ class KeywordsStore:
             entry["weight"] = 100
 
     async def save(self) -> None:
-        """原子写入 JSON，并清理未引用的媒体文件。"""
+        """原子写入 JSON。永久媒体目录（images/records/emojis）永不自动清理。"""
 
         async with self._save_lock:
             self.data_version += 1
@@ -216,8 +227,6 @@ class KeywordsStore:
                         tmp_file.unlink()
                 except Exception:
                     pass
-                return
-        self._cleanup_unused_media()
 
     def bump_version(self) -> None:
         """在外部直接修改 data 后手动递增版本号（用于刷新匹配缓存）。"""
@@ -226,25 +235,46 @@ class KeywordsStore:
 
     # ─── 媒体文件 ───────────────────────────────────────────────
 
-    def save_media_bytes(self, media_key: str, raw: bytes, suffix: str = "") -> Optional[str]:
-        """将二进制内容按内容哈希落盘，返回文件名（去重）。"""
+    def save_media_bytes(
+        self,
+        media_key: str,
+        raw: bytes,
+        suffix: str = "",
+        *,
+        to_cache: bool = False,
+    ) -> Optional[str]:
+        """将二进制内容按内容哈希落盘，返回文件名（去重）。
 
-        base_dir = self.media_dirs.get(media_key)
+        ``to_cache=True`` 写入 ``media_cache/``；否则写入永久 ``images/records/emojis/``。
+        """
+
+        dirs = self.cache_dirs if to_cache else self.media_dirs
+        base_dir = dirs.get(media_key)
         if base_dir is None or not raw:
             return None
         ext = suffix or _MEDIA_SUFFIX.get(media_key, "")
         filename = hashlib.md5(raw).hexdigest() + ext
         target = base_dir / filename
         try:
+            base_dir.mkdir(parents=True, exist_ok=True)
             if not target.exists():
                 with target.open("wb") as f:
                     f.write(raw)
+            if to_cache:
+                self._trim_media_cache()
             return filename
         except Exception as exc:
-            logger.error(f"保存媒体失败({media_key}): {exc}")
+            logger.error(f"保存媒体失败({media_key}, cache={to_cache}): {exc}")
             return None
 
-    def save_media_base64(self, media_key: str, b64: str, suffix: str = "") -> Optional[str]:
+    def save_media_base64(
+        self,
+        media_key: str,
+        b64: str,
+        suffix: str = "",
+        *,
+        to_cache: bool = False,
+    ) -> Optional[str]:
         """将 base64 内容落盘，返回文件名。"""
 
         if not b64:
@@ -254,58 +284,126 @@ class KeywordsStore:
         except Exception as exc:
             logger.error(f"媒体 base64 解码失败({media_key}): {exc}")
             return None
-        return self.save_media_bytes(media_key, raw, suffix=suffix)
+        return self.save_media_bytes(media_key, raw, suffix=suffix, to_cache=to_cache)
+
+    def _iter_media_cache_files(self) -> List[Path]:
+        """列出 media_cache 下全部普通文件。"""
+
+        files: List[Path] = []
+        for base_dir in self.cache_dirs.values():
+            if not base_dir.is_dir():
+                continue
+            try:
+                for name in os.listdir(base_dir):
+                    path = base_dir / name
+                    if path.is_file():
+                        files.append(path)
+            except Exception as exc:
+                logger.warning(f"扫描媒体缓存目录失败: {base_dir} error={exc}")
+        return files
+
+    def _trim_media_cache(self, max_files: int = _MEDIA_CACHE_MAX_FILES) -> None:
+        """media_cache 超过上限时按修改时间滚动删除最旧文件。"""
+
+        limit = max(1, int(max_files))
+        try:
+            files = self._iter_media_cache_files()
+            overflow = len(files) - limit
+            if overflow <= 0:
+                return
+            files.sort(key=lambda path: path.stat().st_mtime)
+            removed = 0
+            for path in files[:overflow]:
+                try:
+                    path.unlink()
+                    removed += 1
+                except Exception as exc:
+                    logger.warning(f"删除过期媒体缓存失败: {path} error={exc}")
+            if removed:
+                logger.info(f"媒体缓存滚动清理: 删除 {removed} 个最旧文件（上限 {limit}）")
+        except Exception as exc:
+            logger.error(f"媒体缓存滚动清理失败: {exc}")
+
+    def promote_media_from_cache(self, media_key: str, filename: str) -> Optional[str]:
+        """把 ``media_cache`` 中的文件复制到永久媒体目录（同名），返回文件名。"""
+
+        name = os.path.basename(str(filename or "").strip())
+        if not name or media_key not in _MEDIA_DIRS:
+            return None
+        cache_path = self.cache_dirs[media_key] / name
+        permanent_path = self.media_dirs[media_key] / name
+        try:
+            self.media_dirs[media_key].mkdir(parents=True, exist_ok=True)
+            if permanent_path.is_file():
+                return name
+            if cache_path.is_file():
+                permanent_path.write_bytes(cache_path.read_bytes())
+                return name
+        except Exception as exc:
+            logger.error(f"提升缓存媒体失败({media_key}/{name}): {exc}")
+            return None
+        return None
+
+    def promote_entry_media(self, entry: Optional[dict]) -> dict:
+        """把 entry 引用的缓存媒体提升到永久目录，供词库长期保存。"""
+
+        entry = entry or {}
+        if not isinstance(entry, dict):
+            return entry
+
+        for key in _MEDIA_DIRS:
+            items = entry.get(key) or []
+            if not isinstance(items, list):
+                continue
+            for item in items:
+                if isinstance(item, dict) and item.get("file"):
+                    promoted = self.promote_media_from_cache(key, str(item.get("file") or ""))
+                    if promoted:
+                        item["file"] = promoted
+
+        for part in entry.get("parts") or []:
+            if not isinstance(part, dict):
+                continue
+            for seg in KeywordsStore.get_part_segments(part):
+                if not isinstance(seg, dict):
+                    continue
+                seg_type = str(seg.get("type") or "").strip().lower()
+                media_key = {
+                    "image": "images",
+                    "voice": "records",
+                    "record": "records",
+                    "emoji": "emojis",
+                }.get(seg_type)
+                if not media_key:
+                    continue
+                name = str(seg.get("file") or "").strip()
+                if not name:
+                    continue
+                promoted = self.promote_media_from_cache(media_key, name)
+                if promoted:
+                    seg["file"] = promoted
+        return entry
 
     def read_media_base64(self, media_key: str, filename: str) -> Optional[str]:
-        """读取媒体文件并返回 base64；文件缺失返回 None。"""
+        """读取媒体文件并返回 base64；优先永久目录，其次缓存目录。"""
 
-        base_dir = self.media_dirs.get(media_key)
-        if base_dir is None or not filename:
+        if media_key not in _MEDIA_DIRS or not filename:
             return None
-        path = base_dir / os.path.basename(filename)
-        if not path.is_file():
-            logger.warning(f"媒体文件不存在: {path}")
-            return None
-        try:
-            return base64.b64encode(path.read_bytes()).decode("utf-8")
-        except Exception as exc:
-            logger.error(f"读取媒体失败({media_key}): {exc}")
-            return None
-
-    def _collect_referenced_media(self) -> Dict[str, set]:
-        refs: Dict[str, set] = {key: set() for key in _MEDIA_DIRS}
-        for section in SECTIONS:
-            for cfg in self.data.get(section, []):
-                if not isinstance(cfg, dict):
-                    continue
-                for entry in cfg.get("entries", []):
-                    if not isinstance(entry, dict):
-                        continue
-                    for key in _MEDIA_DIRS:
-                        for item in entry.get(key, []):
-                            name = (item or {}).get("file")
-                            if name:
-                                refs[key].add(os.path.basename(name))
-        return refs
-
-    def _cleanup_unused_media(self) -> None:
-        try:
-            referenced = self._collect_referenced_media()
-            removed = 0
-            for key, base_dir in self.media_dirs.items():
-                if not base_dir.is_dir():
-                    continue
-                for name in os.listdir(base_dir):
-                    full = base_dir / name
-                    if not full.is_file():
-                        continue
-                    if name not in referenced[key]:
-                        full.unlink()
-                        removed += 1
-            if removed:
-                logger.info(f"已清理未引用媒体文件: {removed} 个")
-        except Exception as exc:
-            logger.error(f"清理未引用媒体文件失败: {exc}")
+        name = os.path.basename(filename)
+        candidates = [
+            self.media_dirs[media_key] / name,
+            self.cache_dirs[media_key] / name,
+        ]
+        for path in candidates:
+            if not path.is_file():
+                continue
+            try:
+                return base64.b64encode(path.read_bytes()).decode("utf-8")
+            except Exception as exc:
+                logger.error(f"读取媒体失败({media_key}): {exc}")
+                return None
+        logger.warning(f"媒体文件不存在: {self.media_dirs[media_key] / name}")
+        return None
 
     # ─── entry 辅助 ─────────────────────────────────────────────
 
