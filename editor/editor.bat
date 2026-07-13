@@ -1,1 +1,1 @@
-python server.py --data-dir ..\..\maibot_plugin.keywords_reply
+python server.py --data-dir ..\..\data\plugins\maibot_plugin.keywords_reply

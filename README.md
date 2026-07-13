@@ -87,6 +87,8 @@ python editor/server.py --data-dir "你的MaiBot/data/plugins/maibot_plugin.keyw
 
 浏览器访问 `http://127.0.0.1:8765`。保存后执行 `/重载词库` 或重启 MaiBot。
 
+![](editor.png)
+
 详见 [editor/README.md](editor/README.md)。OhData 迁移工具见 [tools/README.md](tools/README.md)。
 
 ---
