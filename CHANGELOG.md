@@ -1,5 +1,9 @@
 # 更新日志
 
+## 1.1.3
+
+- 修复视频被 MaiBot 归一成 ``type:file``（``name/size/url``）后无法写入 ``media_cache``、触发回复只剩「文件: xxx.mp4，大小: …」文本的问题；入库时剥离该类文件占位文案。
+
 ## 1.1.2
 
 - 支持视频消息：引用视频后添加关键词，流程与图片相同（``before_process`` 写入 ``media_cache/videos/``，入库时提升到 ``videos/``）；发送使用 NapCat/OneBot ``video`` 段（``base64://``）。

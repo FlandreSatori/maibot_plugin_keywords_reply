@@ -8,7 +8,7 @@ from typing import Any, Dict
 
 _TEMPLATE_PATTERN = re.compile(r"\{([a-zA-Z_][a-zA-Z0-9_]*)\}")
 
-# MaiBot 入站预处理会把图片/表情/语音转成可读占位文本，不应作为关键词回复的正文保存。
+# MaiBot 入站预处理会把图片/表情/语音/文件转成可读占位文本，不应作为关键词回复的正文保存。
 _AUTO_MEDIA_TEXT_PATTERN = re.compile(
     r"\[(?:"
     r"图片[：:][^\]]*"
@@ -24,10 +24,13 @@ _AUTO_MEDIA_TEXT_PATTERN = re.compile(
     r"|语音消息[^\]]*"
     r"|视频[：:][^\]]*"
     r"|视频(?:\s*x\d+)?"
+    r"|文件[：:][^\]]*"
+    r"|文件"
     r"|网易云音乐[^\]]*"
     r"|QQ音乐[^\]]*"
     r"|音乐[^\]]*"
     r")\]"
+    r"|文件[：:][^\n]+"
 )
 
 # 危险正则片段，用于粗略防止 ReDoS

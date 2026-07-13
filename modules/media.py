@@ -87,9 +87,11 @@ def _segment_data(seg: dict) -> Any:
     """读取消息段负载，兼容 ``data`` 与 ``content`` 两种字段名。"""
 
     seg_type = str(seg.get("type", "")).strip().lower()
-    if seg_type in {"image", "emoji", "voice"} and seg.get("content") is not None:
+    if seg_type in {"image", "emoji", "voice", "video", "file"} and seg.get("content") is not None:
         return seg.get("content")
-    return seg.get("data")
+    if seg.get("data") is not None:
+        return seg.get("data")
+    return seg.get("content")
 
 
 def _looks_like_base64(value: str) -> bool:
@@ -124,27 +126,88 @@ def _extract_nested_media_segment(seg: dict) -> Optional[tuple[str, dict]]:
 
 
 def _looks_like_video_payload(payload: Any) -> bool:
-    """判断 dict 是否像 OneBot/NapCat 视频段负载（MaiBot 可能丢掉外层 type=video）。"""
+    """判断 dict 是否像视频负载（含 MaiBot ``FileComponent`` 与裸 video data）。"""
 
     if not isinstance(payload, dict):
         return False
     if str(payload.get("type") or "").strip().lower() == "video":
         return True
-    file_name = str(payload.get("file") or payload.get("path") or "").strip().lower()
-    url = str(payload.get("url") or "").strip().lower()
+
+    mime = str(payload.get("mime_type") or payload.get("mimeType") or "").strip().lower()
+    if mime.startswith("video/"):
+        return True
+
+    file_name = str(
+        payload.get("file")
+        or payload.get("name")
+        or payload.get("path")
+        or payload.get("file_name")
+        or payload.get("filename")
+        or ""
+    ).strip().lower()
+    url = str(payload.get("url") or payload.get("file_url") or "").strip().lower()
     path_part = url.split("?", 1)[0]
     video_exts = (".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v")
     if any(file_name.endswith(ext) for ext in video_exts):
         return True
     if any(path_part.endswith(ext) for ext in video_exts):
         return True
-    # NapCat 群视频：file 常为 hash.mp4，url 指向 multimedia，并带 file_size
-    if payload.get("file_size") is not None and (url.startswith("http://") or url.startswith("https://")):
+
+    size = payload.get("file_size", payload.get("size"))
+    if size is not None and (url.startswith("http://") or url.startswith("https://")):
         if "multimedia" in url or "orgfmt=t264" in url or "video" in url:
             return True
         if file_name and not file_name.startswith(("http://", "https://", "base64://", "data:")):
             return True
     return False
+
+
+def _normalize_to_video_segment(seg: dict) -> Optional[dict]:
+    """把 ``video`` / ``file`` / ``dict`` 段规范为 ``{"type":"video","data":{...}}``。"""
+
+    if not isinstance(seg, dict):
+        return None
+    seg_type = str(seg.get("type", "")).strip().lower()
+    data = _segment_data(seg)
+
+    if seg_type == "video":
+        payload = data if isinstance(data, dict) else {"file": data}
+        return {"type": "video", "data": payload, "url": seg.get("url"), "binary_data_base64": seg.get("binary_data_base64")}
+
+    if seg_type == "file" and isinstance(data, dict) and _looks_like_video_payload(data):
+        return {
+            "type": "video",
+            "data": {
+                "file": data.get("file") or data.get("name") or data.get("file_name") or data.get("filename") or "",
+                "url": data.get("url") or data.get("file_url") or "",
+                "file_size": data.get("file_size") or data.get("size") or "",
+                "base64": data.get("base64") or data.get("base64_data") or "",
+            },
+            "binary_data_base64": seg.get("binary_data_base64"),
+        }
+
+    if seg_type == "dict" and isinstance(data, dict):
+        inner_type = str(data.get("type") or "").strip().lower()
+        if inner_type == "video":
+            inner = data.get("data", data)
+            payload = inner if isinstance(inner, dict) else {"file": inner}
+            return {"type": "video", "data": payload}
+        if inner_type == "file":
+            inner = data.get("data", data)
+            if isinstance(inner, dict) and _looks_like_video_payload(inner):
+                return _normalize_to_video_segment({"type": "file", "data": inner})
+        if _looks_like_video_payload(data):
+            # MaiBot 丢掉 type=video 后只剩 {file,url,file_size}，或 File 字段名
+            return {
+                "type": "video",
+                "data": {
+                    "file": data.get("file") or data.get("name") or data.get("file_name") or data.get("filename") or "",
+                    "url": data.get("url") or data.get("file_url") or "",
+                    "file_size": data.get("file_size") or data.get("size") or "",
+                    "base64": data.get("base64") or data.get("base64_data") or "",
+                },
+            }
+    return None
 
 
 def _video_suffix_from_name(name: str) -> str:
@@ -189,7 +252,14 @@ def _download_url_base64(url: str, *, timeout: int = 15) -> str:
     if not normalized.startswith(("http://", "https://")):
         return ""
     try:
-        with urllib_request.urlopen(normalized, timeout=timeout) as resp:
+        req = urllib_request.Request(
+            normalized,
+            headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                "Accept": "*/*",
+            },
+        )
+        with urllib_request.urlopen(req, timeout=timeout) as resp:
             return base64.b64encode(resp.read()).decode("utf-8")
     except Exception as exc:
         logger.warning(f"下载媒体失败: {normalized[:120]} error={exc}")
@@ -214,17 +284,17 @@ def _candidate_media_urls(seg: dict) -> List[str]:
     if isinstance(data, str):
         add(data)
     elif isinstance(data, dict):
-        # NapCat video: data={file,url,file_size} 或 dict 包装 {type:video,data:{...}}
-        inner = data.get("data") if str(data.get("type") or "").strip().lower() == "video" else data
+        # NapCat video / MaiBot FileComponent 字段
+        inner = data.get("data") if str(data.get("type") or "").strip().lower() in {"video", "file"} else data
         if isinstance(inner, dict):
-            add(inner.get("url"))
-            add(inner.get("file"))
-            add(inner.get("path"))
+            add(inner.get("url") or inner.get("file_url"))
+            add(inner.get("base64") or inner.get("base64_data"))
+            add(inner.get("file") or inner.get("name") or inner.get("path") or inner.get("file_name"))
         else:
             add(inner)
-        add(data.get("url"))
-        add(data.get("file"))
-        add(data.get("path"))
+        add(data.get("url") or data.get("file_url"))
+        add(data.get("base64") or data.get("base64_data"))
+        add(data.get("file") or data.get("name") or data.get("path") or data.get("file_name"))
     return candidates
 
 
@@ -465,6 +535,10 @@ def _raw_segment_to_part_segment(
     if not isinstance(seg, dict):
         return None
 
+    video_seg = _normalize_to_video_segment(seg)
+    if video_seg is not None:
+        seg = video_seg
+
     seg_type = str(seg.get("type", "")).strip().lower()
     music_card = _extract_music_from_segment(seg)
 
@@ -574,6 +648,9 @@ def build_entry_from_segments(
     for seg in segments or []:
         if not isinstance(seg, dict):
             continue
+        video_seg = _normalize_to_video_segment(seg)
+        if video_seg is not None:
+            seg = video_seg
         seg_type = str(seg.get("type", "")).strip().lower()
         part_segment = _raw_segment_to_part_segment(
             seg,

@@ -4,7 +4,7 @@
 
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](LICENSE)
 [![MaiBot SDK](https://img.shields.io/badge/MaiBot%20SDK-2.x-green.svg)](https://github.com/MaiM-with-u/MaiBot)
-[![Version](https://img.shields.io/badge/version-1.1.2-orange.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.1.3-orange.svg)](CHANGELOG.md)
 
 ---
 
@@ -233,7 +233,7 @@ entry 结构示例：
 
 - 富媒体通过入站二进制落盘，发送时用 `send.hybrid` / `send.forward`
 - 引用回复、At 使用 MaiBot 消息段（`reply` / `at`）
-- QQ 原生表情（face）尽力支持；视频回复不再支持
+- QQ 原生表情（face）尽力支持；视频按 NapCat ``video`` / MaiBot ``file`` 段捕获并发送
 
 ### 触发挂载点
 
