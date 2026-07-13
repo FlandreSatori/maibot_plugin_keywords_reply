@@ -434,19 +434,28 @@ tr:hover td { background: rgba(91, 157, 255, 0.06); }
   border: 1px dashed rgba(96, 165, 250, 0.45);
   box-sizing: border-box;
 }
-.entry-block--reordering .entry-body {
+.entry-block--reordering .message-body {
   user-select: none;
 }
-.entry-block--reordering .entry-body > .part-row:not(.part-row--lifted),
-.entry-block--reordering .entry-body > .part-row-placeholder {
+.entry-block--reordering .message-body > .part-row:not(.part-row--lifted),
+.entry-block--reordering .message-body > .part-row-placeholder {
   transition: opacity 0.18s ease;
 }
 .part-content {
   min-width: 0;
 }
 .part-content input,
-.part-content select {
+.part-content select,
+.part-content textarea {
   width: 100%;
+}
+.text-segment-input {
+  min-height: 2.4em;
+  resize: vertical;
+  font-family: Consolas, "Cascadia Mono", "Segoe UI Mono", monospace;
+  line-height: 1.35;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 .reply-row input,
 .reply-row select {
@@ -505,6 +514,54 @@ tr:hover td { background: rgba(91, 157, 255, 0.06); }
 .hint-inline {
   color: var(--muted);
   font-size: 0.82rem;
+}
+
+.message-group {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  margin: 8px;
+  background: rgba(0, 0, 0, 0.12);
+  overflow: hidden;
+}
+.message-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  background: rgba(91, 157, 255, 0.06);
+}
+.message-label {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--accent);
+  white-space: nowrap;
+}
+.message-summary {
+  flex: 1;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 0.74rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.message-body .reply-row:last-child {
+  border-bottom: none;
+}
+.message-actions {
+  padding: 4px 8px 10px;
+}
+.btn-add-message {
+  width: 100%;
+  border: 1px dashed var(--border);
+  background: transparent;
+  color: var(--muted);
+  font-weight: 600;
+}
+.btn-add-message:hover {
+  color: var(--accent);
+  border-color: var(--accent);
 }
 
 .entry-block {

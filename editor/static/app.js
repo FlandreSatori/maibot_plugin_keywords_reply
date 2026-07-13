@@ -33,8 +33,9 @@ const state = {
   searchHay: [],
   filterTimer: null,
   renderQueued: false,
-  addMenuRowId: null,
+  addMenuTarget: null,
   selectedEntries: new Set(),
+  messageSeq: 0,
   partSeq: 0,
   reorder: null,
 };
@@ -74,6 +75,11 @@ function newRowId() {
   return `row-${state.rowSeq}`;
 }
 
+function newMessageId() {
+  state.messageSeq += 1;
+  return `msg-${state.messageSeq}`;
+}
+
 function newPartId() {
   state.partSeq += 1;
   return `part-${state.partSeq}`;
@@ -109,8 +115,20 @@ function normalizeMediaPath(kind, rawPath) {
 function entryHasPayload(entry) {
   if (entry.parts?.length) {
     return entry.parts.some((part) => {
+      if (part.segments?.length) {
+        return part.segments.some((seg) => {
+          if (seg.type === "text") return !!(seg.text || "").trim();
+          if (seg.type === "music") return !!(seg.id || "").trim();
+          if (seg.type === "face") return seg.id != null && String(seg.id).trim() !== "";
+          if (seg.type === "image" || seg.type === "voice" || seg.type === "emoji") {
+            return !!(seg.file || "").trim();
+          }
+          return false;
+        });
+      }
       if (part.type === "text") return !!(part.text || "").trim();
       if (part.type === "music") return !!(part.id || "").trim();
+      if (part.type === "face") return part.id != null && String(part.id).trim() !== "";
       if (part.type === "image" || part.type === "voice" || part.type === "emoji") {
         return !!(part.file || "").trim();
       }
@@ -156,15 +174,23 @@ function fieldToMediaFiles(raw, kind) {
 }
 
 const PART_TYPES = [
-  { key: "text", label: "文本", addLabel: "文本", placeholder: "回复文本" },
+  { key: "text", label: "文本", addLabel: "文本", placeholder: "回复文本，换行输入 \\r\\n" },
   { key: "image", label: "图片", addLabel: "图片", placeholder: "images/a.jpg" },
   { key: "voice", label: "语音", addLabel: "语音", placeholder: "records/a.silk" },
   { key: "emoji", label: "表情", addLabel: "表情", placeholder: "emojis/a.gif" },
+  { key: "qqface", label: "QQ表情", addLabel: "QQ表情", placeholder: "face id，如 13" },
   { key: "music", label: "音乐", addLabel: "音乐" },
 ];
 
 function partTypeLabel(type) {
   return PART_TYPES.find((p) => p.key === type)?.label || type;
+}
+
+function createEmptyMessage() {
+  return {
+    id: newMessageId(),
+    segments: [],
+  };
 }
 
 function createEmptyPart(type) {
@@ -175,6 +201,7 @@ function createEmptyPart(type) {
     paths: "",
     platform: "163",
     musicId: "",
+    faceId: "",
   };
 }
 
@@ -182,6 +209,7 @@ function partHasContent(part) {
   if (!part) return false;
   if (part.type === "text") return !!(part.text || "").trim();
   if (part.type === "music") return !!(part.musicId || "").trim();
+  if (part.type === "qqface") return String(part.faceId ?? "").trim() !== "";
   if (part.type === "image" || part.type === "voice" || part.type === "emoji") {
     return !!(part.paths || "").trim();
   }
@@ -189,13 +217,15 @@ function partHasContent(part) {
 }
 
 function entryPartFromJson(part) {
-  const type = part.type || "text";
+  const rawType = part.type || "text";
+  const type = rawType === "face" ? "qqface" : rawType;
   const rowPart = createEmptyPart(type);
-  if (type === "text") rowPart.text = part.text || "";
+  if (type === "text") rowPart.text = encodeTextForEditor(part.text || "");
   if (type === "image" || type === "voice" || type === "emoji") {
     const file = part.file || "";
     rowPart.paths = file ? normalizeMediaPath(type, file.includes("/") ? file : `${REPLY_KINDS[type].prefix}${file}`) : "";
   }
+  if (type === "qqface") rowPart.faceId = part.id != null ? String(part.id) : "";
   if (type === "music") {
     rowPart.platform = part.platform || "163";
     rowPart.musicId = part.id || "";
@@ -203,20 +233,20 @@ function entryPartFromJson(part) {
   return rowPart;
 }
 
-function entryToParts(entry) {
-  if (entry.parts?.length) {
-    return entry.parts.map(entryPartFromJson);
+function legacySegmentsFromEntry(entry) {
+  const segments = [];
+  const rawText = String(entry.text ?? "");
+  if (rawText.trim()) {
+    segments.push({ ...createEmptyPart("text"), text: encodeTextForEditor(rawText) });
   }
-  const parts = [];
-  const text = (entry.text || "").trim();
-  if (text) {
-    for (const line of text.split("\n")) {
-      if (line.trim()) parts.push({ ...createEmptyPart("text"), text: line.trim() });
+  for (const face of entry.faces || []) {
+    if (face?.id != null && String(face.id).trim() !== "") {
+      segments.push({ ...createEmptyPart("qqface"), faceId: String(face.id) });
     }
   }
   for (const img of entry.images || []) {
     if (img?.file) {
-      parts.push({
+      segments.push({
         ...createEmptyPart("image"),
         paths: normalizeMediaPath("image", img.file.includes("/") ? img.file : `images/${img.file}`),
       });
@@ -224,7 +254,7 @@ function entryToParts(entry) {
   }
   for (const voice of entry.records || []) {
     if (voice?.file) {
-      parts.push({
+      segments.push({
         ...createEmptyPart("voice"),
         paths: normalizeMediaPath("voice", voice.file.includes("/") ? voice.file : `records/${voice.file}`),
       });
@@ -232,7 +262,7 @@ function entryToParts(entry) {
   }
   for (const emoji of entry.emojis || []) {
     if (emoji?.file) {
-      parts.push({
+      segments.push({
         ...createEmptyPart("emoji"),
         paths: normalizeMediaPath("emoji", emoji.file.includes("/") ? emoji.file : `emojis/${emoji.file}`),
       });
@@ -240,21 +270,84 @@ function entryToParts(entry) {
   }
   const music = entry.music_cards?.[0];
   if (music?.id) {
-    parts.push({
+    segments.push({
       ...createEmptyPart("music"),
       platform: music.platform || "163",
       musicId: music.id || "",
     });
   }
-  return parts;
+  return segments;
 }
 
+function entryMessagesFromJson(entry) {
+  const hasParts = Array.isArray(entry.parts) && entry.parts.length > 0;
+  if (hasParts) {
+    const messages = entry.parts.map((part) => {
+      if (part.segments?.length) {
+        return {
+          id: newMessageId(),
+          segments: part.segments.map(entryPartFromJson),
+        };
+      }
+      return {
+        id: newMessageId(),
+        segments: [entryPartFromJson(part)],
+      };
+    });
+    const flatText = String(entry.text ?? "").trim();
+    if (flatText && !messages.some((msg) => (msg.segments || []).some((seg) => seg.type === "text" && seg.text))) {
+      const first = messages[0];
+      if (first) {
+        first.segments.unshift({
+          ...createEmptyPart("text"),
+          text: encodeTextForEditor(String(entry.text ?? "")),
+        });
+      } else {
+        messages.push({
+          id: newMessageId(),
+          segments: [{ ...createEmptyPart("text"), text: encodeTextForEditor(String(entry.text ?? "")) }],
+        });
+      }
+    }
+    return messages;
+  }
+  const segments = legacySegmentsFromEntry(entry);
+  if (!segments.length) return [];
+  return [{ id: newMessageId(), segments }];
+}
+
+function collectEntrySegments(entry) {
+  if (entry.parts?.length) {
+    const out = [];
+    for (const part of entry.parts) {
+      if (part.segments?.length) out.push(...part.segments);
+      else out.push(part);
+    }
+    return out;
+  }
+  return legacySegmentsFromEntry(entry).map(partToJson);
+}
+
+function entryHasReplyType(entry, type) {
+  if (type === "all") return true;
+  const segments = collectEntrySegments(entry);
+  if (type === "text") return segments.some((p) => p.type === "text" && (p.text || "").trim());
+  if (type === "image") return segments.some((p) => p.type === "image");
+  if (type === "voice") return segments.some((p) => p.type === "voice");
+  if (type === "emoji") return segments.some((p) => p.type === "emoji");
+  if (type === "music") return segments.some((p) => p.type === "music");
+  return true;
+}
 function partToJson(part) {
-  const out = { type: part.type };
-  if (part.type === "text") out.text = String(part.text || "").trim();
+  const out = { type: part.type === "qqface" ? "face" : part.type };
+  if (part.type === "text") out.text = decodeTextFromEditor(part.text);
   if (part.type === "image" || part.type === "voice" || part.type === "emoji") {
     const file = basename(normalizeMediaPath(part.type, splitPaths(part.paths)[0] || ""));
     if (file) out.file = file;
+  }
+  if (part.type === "qqface") {
+    const faceId = String(part.faceId ?? "").trim();
+    if (faceId !== "") out.id = Number.parseInt(faceId, 10);
   }
   if (part.type === "music") {
     out.platform = String(part.platform || "163").trim();
@@ -263,34 +356,27 @@ function partToJson(part) {
   return out;
 }
 
-function entryHasReplyType(entry, type) {
-  if (type === "all") return true;
-  const parts = entry.parts?.length ? entry.parts : entryToParts(entry).map(partToJson);
-  if (type === "text") return parts.some((p) => p.type === "text" && (p.text || "").trim());
-  if (type === "image") return parts.some((p) => p.type === "image");
-  if (type === "voice") return parts.some((p) => p.type === "voice");
-  if (type === "emoji") return parts.some((p) => p.type === "emoji");
-  if (type === "music") return parts.some((p) => p.type === "music");
-  return true;
-}
-
 function ruleHasReplyType(rule, type) {
   if (type === "all") return true;
   return (rule.entries || []).some((entry) => entryHasReplyType(entry, type));
 }
 
+function messageHasPayload(message) {
+  return (message?.segments || []).some(partHasContent);
+}
+
 function rowHasPayload(row) {
-  return (row.parts || []).some(partHasContent);
+  return (row.messages || []).some(messageHasPayload);
 }
 
 function entryToRow(entry) {
-  const parts = entryToParts(entry);
+  const messages = entryMessagesFromJson(entry);
   return {
     id: newRowId(),
     kind: "entry",
     weight: clampWeight(entry.weight),
     probability: clampProbability(entry.probability),
-    parts: parts.length ? parts : [],
+    messages: messages.length ? messages : [createEmptyMessage()],
   };
 }
 
@@ -300,7 +386,11 @@ function entriesToRows(entries) {
 }
 
 function rowToEntry(row) {
-  const parts = (row.parts || []).filter(partHasContent).map(partToJson);
+  const parts = [];
+  for (const message of row.messages || []) {
+    const segments = (message.segments || []).filter(partHasContent).map(partToJson);
+    if (segments.length) parts.push({ segments });
+  }
   return {
     weight: clampWeight(row.weight),
     probability: clampProbability(row.probability),
@@ -324,9 +414,16 @@ function rowsToEntries(rows) {
   return entries;
 }
 
-function describeRowKind(row) {
-  const labels = (row.parts || []).filter(partHasContent).map((p) => partTypeLabel(p.type));
+function describeMessageSegments(message) {
+  const labels = (message.segments || []).filter(partHasContent).map((p) => partTypeLabel(p.type));
   return labels.length ? labels.join("→") : "空";
+}
+
+function describeRowKind(row) {
+  const messages = (row.messages || []).filter(messageHasPayload);
+  if (!messages.length) return "空";
+  if (messages.length === 1) return describeMessageSegments(messages[0]);
+  return messages.map((msg, index) => `消息${index + 1}[${describeMessageSegments(msg)}]`).join(" | ");
 }
 
 function createEmptyRow() {
@@ -335,20 +432,26 @@ function createEmptyRow() {
     kind: "entry",
     weight: 100,
     probability: 100,
-    parts: [],
+    messages: [createEmptyMessage()],
   };
 }
 
 function rowHasContentType(row, type) {
   if (type === "all") return true;
-  return (row.parts || []).some((part) => {
-    if (type === "text") return part.type === "text" && !!(part.text || "").trim();
-    if (type === "image") return part.type === "image" && !!(part.paths || "").trim();
-    if (type === "voice") return part.type === "voice" && !!(part.paths || "").trim();
-    if (type === "emoji") return part.type === "emoji" && !!(part.paths || "").trim();
-    if (type === "music") return part.type === "music" && !!(part.musicId || "").trim();
-    return false;
-  });
+  return (row.messages || []).some((message) =>
+    (message.segments || []).some((part) => {
+      if (type === "text") return part.type === "text" && !!(part.text || "").trim();
+      if (type === "image") return part.type === "image" && !!(part.paths || "").trim();
+      if (type === "voice") return part.type === "voice" && !!(part.paths || "").trim();
+      if (type === "emoji") return part.type === "emoji" && !!(part.paths || "").trim();
+      if (type === "music") return part.type === "music" && !!(part.musicId || "").trim();
+      return false;
+    })
+  );
+}
+
+function findMessage(row, messageId) {
+  return (row?.messages || []).find((message) => message.id === messageId);
 }
 
 function getEntryFilterType() {
@@ -373,9 +476,63 @@ function renderPartContent(part) {
       </div>`;
   }
   if (part.type === "text") {
-    return `<input type="text" data-field="text" value="${escapeHtml(part.text || "")}" placeholder="${meta?.placeholder || ""}" />`;
+    const encoded = encodeTextForEditor(part.text || "");
+    return `<textarea rows="2" data-field="text" class="text-segment-input" placeholder="${meta?.placeholder || ""}">${escapeHtml(encoded)}</textarea>`;
+  }
+  if (part.type === "qqface") {
+    return `<input type="number" min="0" step="1" data-field="faceId" value="${escapeHtml(part.faceId || "")}" placeholder="${meta?.placeholder || ""}" />`;
   }
   return `<input type="text" data-field="paths" value="${escapeHtml(part.paths || "")}" placeholder="${meta?.placeholder || ""}" />`;
+}
+
+function renderSegmentRow(segment, options = {}) {
+  const { isLast = false, messageId = "" } = options;
+  const addBtn = isLast
+    ? `<button type="button" class="btn-add-part" data-action="toggle-add-menu" data-message-id="${messageId}" title="在本条消息内追加内容">+</button>`
+    : `<span class="action-placeholder" aria-hidden="true"></span>`;
+  return `
+    <div class="reply-row part-row" data-part-id="${segment.id}">
+      <button type="button" class="drag-handle" data-action="drag-handle" title="长按拖动排序" aria-label="拖动排序">⠿</button>
+      <div class="kind-badge">${partTypeLabel(segment.type)}</div>
+      <div class="part-content">${renderPartContent(segment)}</div>
+      <div class="row-actions">
+        <button type="button" class="btn-icon secondary" data-action="remove-part" data-part-id="${segment.id}" title="移除此段">×</button>
+        ${addBtn}
+      </div>
+    </div>`;
+}
+
+function renderMessageGroup(message, messageIndex, rowId) {
+  const segments = message.segments || [];
+  const segmentRows = segments.length
+    ? segments
+        .map((segment, index) =>
+          renderSegmentRow(segment, {
+            isLast: index === segments.length - 1,
+            messageId: message.id,
+          })
+        )
+        .join("")
+    : `
+      <div class="reply-row part-row is-empty">
+        <div class="drag-handle-placeholder"></div>
+        <div class="kind-badge">—</div>
+        <div class="hint-inline">点击 + 在本条消息内添加内容</div>
+        <div class="row-actions">
+          <span class="action-placeholder"></span>
+          <button type="button" class="btn-add-part" data-action="toggle-add-menu" data-message-id="${message.id}" title="在本条消息内追加内容">+</button>
+        </div>
+      </div>`;
+
+  return `
+    <div class="message-group" data-message-id="${message.id}">
+      <div class="message-head">
+        <span class="message-label">消息 ${messageIndex + 1}</span>
+        <span class="message-summary">${escapeHtml(describeMessageSegments(message))}</span>
+        <button type="button" class="link-btn" data-action="remove-message" data-message-id="${message.id}" title="删除本条聊天消息">删除消息</button>
+      </div>
+      <div class="message-body">${segmentRows}</div>
+    </div>`;
 }
 
 function renderEntryBlock(row) {
@@ -396,51 +553,21 @@ function renderEntryBlock(row) {
       </div>
     </aside>`;
 
-  const parts = row.parts || [];
-  if (!parts.length) {
-    return `
-      <div class="entry-block" data-row-id="${row.id}">
-        <div class="entry-block-layout">
-          ${rail}
-          <div class="entry-body">
-            <div class="reply-row part-row is-empty">
-              <div class="drag-handle-placeholder"></div>
-              <div class="kind-badge">—</div>
-              <div class="hint-inline">点击 + 添加内容</div>
-              <div class="row-actions">
-                <span class="action-placeholder"></span>
-                <button type="button" class="btn-add-part" data-action="toggle-add-menu" title="添加内容">+</button>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>`;
-  }
-
-  const partRows = parts
-    .map((part, index) => {
-      const isLast = index === parts.length - 1;
-      const addBtn = isLast
-        ? `<button type="button" class="btn-add-part" data-action="toggle-add-menu" title="添加内容">+</button>`
-        : `<span class="action-placeholder" aria-hidden="true"></span>`;
-      return `
-        <div class="reply-row part-row" data-part-id="${part.id}">
-          <button type="button" class="drag-handle" data-action="drag-handle" title="长按拖动排序" aria-label="拖动排序">⠿</button>
-          <div class="kind-badge">${partTypeLabel(part.type)}</div>
-          <div class="part-content">${renderPartContent(part)}</div>
-          <div class="row-actions">
-            <button type="button" class="btn-icon secondary" data-action="remove-part" data-part-id="${part.id}" title="移除此行">×</button>
-            ${addBtn}
-          </div>
-        </div>`;
-    })
+  const messages = row.messages || [];
+  const messageGroups = (messages.length ? messages : [createEmptyMessage()])
+    .map((message, index) => renderMessageGroup(message, index, row.id))
     .join("");
 
   return `
     <div class="entry-block" data-row-id="${row.id}">
       <div class="entry-block-layout">
         ${rail}
-        <div class="entry-body">${partRows}</div>
+        <div class="entry-body">
+          ${messageGroups}
+          <div class="message-actions">
+            <button type="button" class="btn-add-message secondary" data-action="add-message" title="再发一条独立消息">+ 添加下一条消息</button>
+          </div>
+        </div>
       </div>
     </div>`;
 }
@@ -451,17 +578,40 @@ function summarizeEntry(entry) {
   const probability = clampProbability(entry.probability);
   if (weight !== 100) parts.push(`权重${weight}`);
   if (probability !== 100) parts.push(`${probability}%`);
-  const ordered = entry.parts?.length ? entry.parts : entryToParts(entry).map(partToJson);
-  for (const part of ordered) {
-    if (part.type === "text" && part.text) parts.push(part.text.slice(0, 24));
-    if (part.type === "image" && part.file) parts.push(`[图 ${part.file}]`);
-    if (part.type === "voice" && part.file) parts.push(`[语音 ${part.file}]`);
-    if (part.type === "emoji" && part.file) parts.push(`[表情 ${part.file}]`);
-    if (part.type === "music" && part.id) parts.push(`[音乐 ${part.platform}:${part.id}]`);
-  }
-  if (!ordered.length) {
-    if (entry.text) parts.push(entry.text.slice(0, 36));
-    if (entry.images?.length) parts.push(`[图片 ${entry.images.map((x) => x.file).join(",")}]`);
+  const messageParts = entry.parts?.length ? entry.parts : [];
+  if (messageParts.length) {
+    for (const [index, messagePart] of messageParts.entries()) {
+      const segments = messagePart.segments?.length
+        ? messagePart.segments
+        : messagePart.type
+          ? [messagePart]
+          : [];
+      const preview = [];
+      for (const segment of segments) {
+        if (segment.type === "text" && segment.text) preview.push(encodeTextForEditor(segment.text).slice(0, 32));
+        if (segment.type === "image" && segment.file) preview.push(`[图 ${segment.file}]`);
+        if (segment.type === "voice" && segment.file) preview.push(`[语音 ${segment.file}]`);
+        if (segment.type === "emoji" && segment.file) preview.push(`[表情 ${segment.file}]`);
+        if (segment.type === "face" && segment.id != null) preview.push(`[QQ表情 ${segment.id}]`);
+        if (segment.type === "music" && segment.id) preview.push(`[音乐 ${segment.platform}:${segment.id}]`);
+      }
+      if (preview.length) {
+        const label = messageParts.length > 1 ? `消息${index + 1}:` : "";
+        parts.push(`${label}${preview.join("→")}`);
+      }
+    }
+  } else {
+    const ordered = collectEntrySegments(entry);
+    for (const segment of ordered) {
+      if (segment.type === "text" && segment.text) parts.push(encodeTextForEditor(segment.text).slice(0, 32));
+      if (segment.type === "image" && segment.file) parts.push(`[图 ${segment.file}]`);
+      if (segment.type === "voice" && segment.file) parts.push(`[语音 ${segment.file}]`);
+      if (segment.type === "emoji" && segment.file) parts.push(`[表情 ${segment.file}]`);
+      if (segment.type === "face" && segment.id != null) parts.push(`[QQ表情 ${segment.id}]`);
+      if (segment.type === "music" && segment.id) parts.push(`[音乐 ${segment.platform}:${segment.id}]`);
+    }
+    if (!ordered.length && entry.text) parts.push(encodeTextForEditor(entry.text).slice(0, 36));
+    if (!ordered.length && entry.images?.length) parts.push(`[图片 ${entry.images.map((x) => x.file).join(",")}]`);
   }
   return parts.join(" ") || "[空]";
 }
@@ -584,6 +734,29 @@ function markDirty() {
   setStatus("有未保存的修改");
 }
 
+function encodeTextForEditor(text) {
+  return String(text ?? "")
+    .replace(/\r\n/g, "\\r\\n")
+    .replace(/\n/g, "\\n")
+    .replace(/\r/g, "\\r");
+}
+
+function decodeTextFromEditor(text) {
+  return String(text ?? "")
+    .replace(/\\r\\n/g, "\r\n")
+    .replace(/\\n/g, "\n")
+    .replace(/\\r/g, "\r");
+}
+
+function escapeAttr(text) {
+  return escapeHtml(encodeTextForEditor(text))
+    .replace(/\t/g, "&#9;");
+}
+
+function confirmDeleteIfNeeded(hasContent, message, onConfirm) {
+  if (!hasContent || confirm(message)) onConfirm();
+}
+
 function escapeHtml(text) {
   return String(text)
     .replaceAll("&", "&amp;")
@@ -644,22 +817,31 @@ function syncReplyRowsFromDom() {
     const probabilityInput = el.querySelector('.entry-rail [data-field="probability"]');
     if (probabilityInput) existing.probability = clampProbability(probabilityInput.value);
 
-    for (const partEl of el.querySelectorAll(".part-row[data-part-id]")) {
-      const partId = partEl.dataset.partId;
-      const part = (existing.parts || []).find((p) => p.id === partId);
-      if (!part) continue;
+    for (const messageEl of el.querySelectorAll(".message-group[data-message-id]")) {
+      const messageId = messageEl.dataset.messageId;
+      const message = findMessage(existing, messageId);
+      if (!message) continue;
 
-      const textInput = partEl.querySelector('[data-field="text"]');
-      if (textInput) part.text = textInput.value;
+      for (const partEl of messageEl.querySelectorAll(".part-row[data-part-id]")) {
+        const partId = partEl.dataset.partId;
+        const part = (message.segments || []).find((p) => p.id === partId);
+        if (!part) continue;
 
-      const pathsInput = partEl.querySelector('[data-field="paths"]');
-      if (pathsInput) part.paths = pathsInput.value;
+        const textInput = partEl.querySelector('[data-field="text"]');
+        if (textInput) part.text = textInput.value;
 
-      const platformInput = partEl.querySelector('[data-field="platform"]');
-      if (platformInput) part.platform = platformInput.value || "163";
+        const pathsInput = partEl.querySelector('[data-field="paths"]');
+        if (pathsInput) part.paths = pathsInput.value;
 
-      const musicInput = partEl.querySelector('[data-field="musicId"]');
-      if (musicInput) part.musicId = musicInput.value;
+        const platformInput = partEl.querySelector('[data-field="platform"]');
+        if (platformInput) part.platform = platformInput.value || "163";
+
+        const musicInput = partEl.querySelector('[data-field="musicId"]');
+        if (musicInput) part.musicId = musicInput.value;
+
+        const faceInput = partEl.querySelector('[data-field="faceId"]');
+        if (faceInput) part.faceId = faceInput.value;
+      }
     }
   }
 }
@@ -668,21 +850,29 @@ function findReplyRow(rowId) {
   return state.replyRows.find((r) => r.id === rowId);
 }
 
-function clearReplyPart(row, partId) {
-  row.parts = (row.parts || []).filter((p) => p.id !== partId);
+function clearReplySegment(row, messageId, partId) {
+  const message = findMessage(row, messageId);
+  if (!message) return;
+  message.segments = (message.segments || []).filter((p) => p.id !== partId);
+}
+
+function removeMessageFromRow(row, messageId) {
+  row.messages = (row.messages || []).filter((message) => message.id !== messageId);
+  if (!row.messages.length) row.messages = [createEmptyMessage()];
 }
 
 function closePartAddMenu() {
-  state.addMenuRowId = null;
+  state.addMenuTarget = null;
   const menu = $("partAddMenu");
   menu.hidden = true;
 }
 
-function openPartAddMenu(rowId, anchorEl) {
+function openPartAddMenu(rowId, messageId, anchorEl) {
   const row = findReplyRow(rowId);
-  if (!row) return;
+  const message = findMessage(row, messageId);
+  if (!row || !message) return;
 
-  state.addMenuRowId = rowId;
+  state.addMenuTarget = { rowId, messageId };
   const menu = $("partAddMenu");
   const rect = anchorEl.getBoundingClientRect();
   menu.style.left = `${Math.min(rect.left, window.innerWidth - 160)}px`;
@@ -694,9 +884,16 @@ function openPartAddMenu(rowId, anchorEl) {
   }
 }
 
-function addPartToRow(row, partKey) {
-  if (!row.parts) row.parts = [];
-  row.parts.push(createEmptyPart(partKey));
+function addSegmentToMessage(row, messageId, partKey) {
+  const message = findMessage(row, messageId);
+  if (!message) return;
+  if (!message.segments) message.segments = [];
+  message.segments.push(createEmptyPart(partKey));
+}
+
+function addMessageToRow(row) {
+  if (!row.messages) row.messages = [];
+  row.messages.push(createEmptyMessage());
 }
 
 function deleteSelectedEntries() {
@@ -710,12 +907,12 @@ function deleteSelectedEntries() {
   renderReplyRows();
 }
 
-function reorderPartInRow(row, fromIndex, toIndex) {
-  const parts = row.parts || [];
-  if (fromIndex < 0 || toIndex < 0 || fromIndex >= parts.length || toIndex >= parts.length) return;
+function reorderSegmentInMessage(message, fromIndex, toIndex) {
+  const segments = message.segments || [];
+  if (fromIndex < 0 || toIndex < 0 || fromIndex >= segments.length || toIndex >= segments.length) return;
   if (fromIndex === toIndex) return;
-  const [moved] = parts.splice(fromIndex, 1);
-  parts.splice(toIndex, 0, moved);
+  const [moved] = segments.splice(fromIndex, 1);
+  segments.splice(toIndex, 0, moved);
 }
 
 function applyPartRowShiftTransforms(reorder) {
@@ -765,19 +962,22 @@ function computeReorderTargetIndex(reorder, clientY) {
 
 function beginPartReorder(ev, handleEl) {
   const partRow = handleEl.closest(".part-row");
+  const messageGroup = handleEl.closest(".message-group");
   const block = handleEl.closest(".entry-block");
-  const body = block?.querySelector(".entry-body");
-  if (!partRow || !block || !body) return;
+  const body = messageGroup?.querySelector(".message-body");
+  if (!partRow || !block || !body || !messageGroup) return;
 
   const rowId = block.dataset.rowId;
+  const messageId = messageGroup.dataset.messageId;
   const partId = partRow.dataset.partId;
-  if (!rowId || !partId) return;
+  if (!rowId || !messageId || !partId) return;
 
   ev.preventDefault();
   if (state.reorder?.timer) clearTimeout(state.reorder.timer);
 
   state.reorder = {
     rowId,
+    messageId,
     partId,
     pointerId: ev.pointerId,
     active: false,
@@ -859,9 +1059,10 @@ function finishPartReorder(commit = true) {
 
   if (reorder.active && commit && reorder.fromIndex !== reorder.targetIndex) {
     const row = findReplyRow(reorder.rowId);
-    if (row) {
-      const toIndex = Math.min(reorder.targetIndex, Math.max(0, (row.parts || []).length - 1));
-      reorderPartInRow(row, reorder.fromIndex, toIndex);
+    const message = findMessage(row, reorder.messageId);
+    if (message) {
+      const toIndex = Math.min(reorder.targetIndex, Math.max(0, (message.segments || []).length - 1));
+      reorderSegmentInMessage(message, reorder.fromIndex, toIndex);
     }
   }
 
@@ -1207,12 +1408,13 @@ function bindEvents() {
 
   $("partAddMenu").addEventListener("click", (ev) => {
     const btn = ev.target.closest("button[data-part]");
-    if (!btn || !state.addMenuRowId) return;
+    const target = state.addMenuTarget;
+    if (!btn || !target) return;
     syncReplyRowsFromDom();
-    const row = findReplyRow(state.addMenuRowId);
+    const row = findReplyRow(target.rowId);
     const partKey = btn.getAttribute("data-part");
     if (row && partKey) {
-      addPartToRow(row, partKey);
+      addSegmentToMessage(row, target.messageId, partKey);
       closePartAddMenu();
       renderReplyRows();
     }
@@ -1273,27 +1475,66 @@ function bindEvents() {
     if (toggleMenu) {
       syncReplyRowsFromDom();
       const block = toggleMenu.closest(".entry-block");
+      const messageGroup = toggleMenu.closest(".message-group");
       const rowId = block?.dataset.rowId;
-      if (!rowId) return;
-      if (state.addMenuRowId === rowId && !$("partAddMenu").hidden) {
+      const messageId = toggleMenu.getAttribute("data-message-id") || messageGroup?.dataset.messageId;
+      if (!rowId || !messageId) return;
+      if (
+        state.addMenuTarget?.rowId === rowId &&
+        state.addMenuTarget?.messageId === messageId &&
+        !$("partAddMenu").hidden
+      ) {
         closePartAddMenu();
       } else {
-        openPartAddMenu(rowId, toggleMenu);
+        openPartAddMenu(rowId, messageId, toggleMenu);
       }
+      return;
+    }
+
+    const addMessage = target.closest("[data-action='add-message']");
+    if (addMessage) {
+      syncReplyRowsFromDom();
+      const block = addMessage.closest(".entry-block");
+      const row = findReplyRow(block?.dataset.rowId || "");
+      if (row) {
+        addMessageToRow(row);
+        renderReplyRows();
+      }
+      return;
+    }
+
+    const removeMessageBtn = target.closest("[data-action='remove-message']");
+    if (removeMessageBtn) {
+      syncReplyRowsFromDom();
+      const block = removeMessageBtn.closest(".entry-block");
+      const row = findReplyRow(block?.dataset.rowId || "");
+      const messageId = removeMessageBtn.getAttribute("data-message-id");
+      const message = findMessage(row, messageId);
+      confirmDeleteIfNeeded(messageHasPayload(message), "确定删除本条聊天消息？此操作不可撤销。", () => {
+        if (row && messageId) {
+          removeMessageFromRow(row, messageId);
+          renderReplyRows();
+        }
+      });
       return;
     }
 
     const removePart = target.closest("[data-action='remove-part']");
     if (removePart) {
-      if (!confirm("确定移除此行内容？此操作不可撤销。")) return;
       syncReplyRowsFromDom();
       const block = removePart.closest(".entry-block");
+      const messageGroup = removePart.closest(".message-group");
       const row = findReplyRow(block?.dataset.rowId || "");
+      const messageId = messageGroup?.dataset.messageId;
       const partId = removePart.getAttribute("data-part-id");
-      if (row && partId) {
-        clearReplyPart(row, partId);
-        renderReplyRows();
-      }
+      const message = findMessage(row, messageId);
+      const part = (message?.segments || []).find((p) => p.id === partId);
+      confirmDeleteIfNeeded(partHasContent(part), "确定移除此段内容？此操作不可撤销。", () => {
+        if (row && messageId && partId) {
+          clearReplySegment(row, messageId, partId);
+          renderReplyRows();
+        }
+      });
     }
   });
 

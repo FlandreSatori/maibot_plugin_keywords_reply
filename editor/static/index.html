@@ -162,7 +162,7 @@
             <span id="replyPageInfo">第 1 / 1 页</span>
             <button type="button" class="secondary" id="btnReplyNext">下一页</button>
           </div>
-          <p class="hint">每条带边框的回复对应一个 <code>entry</code>。长按左侧圆点可调整同一条回复内的发送顺序；行末 <strong>+</strong> 可追加内容。</p>
+          <p class="hint">每条带边框的回复对应一个 <code>entry</code>（权重/概率）。其内每个<strong>消息组</strong>对应触发后发送的一条聊天消息；组内多行（文本 / QQ表情 / 图片…）会合并到同一条消息里并按顺序发送。长按 ⠿ 可在<strong>同一消息内</strong>拖动排序；<strong>+ 添加下一条消息</strong> 用于 OhData 的 <code>&</code> 分隔。</p>
         </div>
       </div>
 
@@ -214,6 +214,7 @@
     <button type="button" data-part="image">图片</button>
     <button type="button" data-part="voice">语音</button>
     <button type="button" data-part="emoji">表情</button>
+    <button type="button" data-part="qqface">QQ表情</button>
     <button type="button" data-part="music">音乐</button>
   </div>
 

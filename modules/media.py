@@ -331,32 +331,145 @@ def _strip_music_share_text(text: str) -> str:
     return re.sub(r"\s+", " ", cleaned).strip()
 
 
+def _raw_segment_to_part_segment(
+    seg: dict,
+    store: KeywordsStore,
+    *,
+    include_text: bool = True,
+) -> Optional[dict]:
+    """把单条 raw_message 段转换为 ``parts.segments`` 内可存储的 segment dict。"""
+
+    if not isinstance(seg, dict):
+        return None
+
+    seg_type = str(seg.get("type", "")).strip().lower()
+    music_card = _extract_music_from_segment(seg)
+
+    if seg_type == "text":
+        if music_card:
+            song_id = str(music_card.get("id") or "").strip()
+            if song_id:
+                return {
+                    "type": "music",
+                    "platform": str(music_card.get("platform") or "163"),
+                    "id": song_id,
+                }
+            return None
+        if not include_text:
+            return None
+        content = str(_segment_data(seg) or "")
+        if not content:
+            return None
+        plain, inline_ats = extract_inline_ats(content)
+        plain = strip_auto_media_text(plain)
+        if not plain and not inline_ats:
+            return None
+        # At 段单独成 segment；文本段仅保留正文
+        if plain:
+            return {"type": "text", "text": plain}
+        return None
+
+    if seg_type == "at":
+        data = _segment_data(seg) or {}
+        if isinstance(data, dict):
+            uid = str(data.get("target_user_id", "") or "").strip()
+            nickname = str(data.get("target_user_nickname", "") or "")
+            if uid:
+                return {
+                    "type": "at",
+                    "user_id": uid,
+                    "nickname": nickname,
+                    "all": uid.lower() == "all",
+                }
+        return None
+
+    if seg_type in ("image", "emoji", "voice", "record"):
+        media_entry = store.empty_entry()
+        _append_media_segment(media_entry, store, seg_type, seg)
+        media_key = {"image": "images", "emoji": "emojis", "voice": "records"}[
+            "voice" if seg_type in {"voice", "record"} else seg_type
+        ]
+        files = media_entry.get(media_key) or []
+        if not files:
+            return None
+        part_type = "voice" if seg_type in {"voice", "record"} else seg_type
+        return {"type": part_type, "file": str(files[-1].get("file") or "")}
+
+    if seg_type == "music":
+        if not music_card:
+            return None
+        song_id = str(music_card.get("id") or "").strip()
+        if not song_id:
+            return None
+        return {
+            "type": "music",
+            "platform": str(music_card.get("platform") or "163"),
+            "id": song_id,
+        }
+
+    if seg_type == "face":
+        data = _segment_data(seg) or {}
+        if isinstance(data, dict):
+            face_id = _normalize_face_id(data.get("id"))
+            if face_id is not None:
+                return {"type": "face", "id": face_id}
+        return None
+
+    if seg_type == "dict":
+        nested = _extract_nested_media_segment(seg)
+        if nested:
+            inner_type, inner_seg = nested
+            return _raw_segment_to_part_segment(
+                {"type": inner_type, "data": _segment_data(inner_seg)},
+                store,
+                include_text=include_text,
+            )
+        data = _segment_data(seg) or {}
+        if isinstance(data, dict) and str(data.get("type", "")).lower() == "face":
+            face_data = data.get("data", data)
+            face_id = face_data.get("id") if isinstance(face_data, dict) else None
+            normalized_id = _normalize_face_id(face_id)
+            if normalized_id is not None:
+                return {"type": "face", "id": normalized_id}
+        if music_card:
+            song_id = str(music_card.get("id") or "").strip()
+            if song_id:
+                return {
+                    "type": "music",
+                    "platform": str(music_card.get("platform") or "163"),
+                    "id": song_id,
+                }
+    return None
+
+
 def build_entry_from_segments(
     segments: List[dict],
     store: KeywordsStore,
     include_text: bool = True,
 ) -> dict:
-    """把 raw_message 段解析为一条 entry（媒体落盘）。"""
+    """把 raw_message 段解析为 entry，保留同一条消息内的段顺序。"""
 
     entry = store.empty_entry()
+    ordered_segments: List[dict] = []
     text_parts: List[str] = []
 
     for seg in segments or []:
         if not isinstance(seg, dict):
             continue
         seg_type = str(seg.get("type", "")).strip().lower()
-        music_card = _extract_music_from_segment(seg)
+        part_segment = _raw_segment_to_part_segment(seg, store, include_text=include_text)
+        if part_segment:
+            ordered_segments.append(part_segment)
+            if part_segment.get("type") == "text":
+                text_parts.append(str(part_segment.get("text") or ""))
 
-        if seg_type == "text":
-            if music_card:
-                _append_music_card(entry, music_card)
-            elif include_text:
-                content = str(_segment_data(seg) or "")
-                if content:
-                    plain, inline_ats = extract_inline_ats(content)
-                    if plain:
-                        text_parts.append(plain)
-                    entry["ats"].extend(inline_ats)
+        # 兼容旧字段与列表摘要：继续填充扁平媒体/At 列表
+        music_card = _extract_music_from_segment(seg)
+        if seg_type == "text" and include_text and not music_card:
+            content = str(_segment_data(seg) or "")
+            if content:
+                plain, inline_ats = extract_inline_ats(content)
+                entry["ats"].extend(inline_ats)
         elif seg_type == "at":
             data = _segment_data(seg) or {}
             if isinstance(data, dict):
@@ -370,8 +483,10 @@ def build_entry_from_segments(
             _append_music_card(entry, music_card)
         elif seg_type == "face":
             data = _segment_data(seg) or {}
-            if isinstance(data, dict) and data.get("id") is not None:
-                entry["faces"].append({"id": data.get("id")})
+            if isinstance(data, dict):
+                face_id = _normalize_face_id(data.get("id"))
+                if face_id is not None:
+                    entry["faces"].append({"id": face_id})
         elif seg_type == "dict":
             nested = _extract_nested_media_segment(seg)
             if nested:
@@ -382,10 +497,14 @@ def build_entry_from_segments(
                 if isinstance(data, dict) and str(data.get("type", "")).lower() == "face":
                     face_data = data.get("data", data)
                     face_id = face_data.get("id") if isinstance(face_data, dict) else None
-                    if face_id is not None:
-                        entry["faces"].append({"id": face_id})
+                    normalized_id = _normalize_face_id(face_id)
+                    if normalized_id is not None:
+                        entry["faces"].append({"id": normalized_id})
                 elif music_card:
                     _append_music_card(entry, music_card)
+
+    if ordered_segments:
+        entry["parts"] = [KeywordsStore.make_message_part(ordered_segments)]
 
     if include_text:
         entry["text"] = strip_auto_media_text("".join(text_parts).strip())
@@ -435,22 +554,92 @@ def strip_text_at_mentions(text: str, ats: List[dict]) -> str:
     return re.sub(r"\s+", " ", cleaned).strip()
 
 
+def _normalize_face_id(value: Any) -> Optional[int]:
+    """把 QQ face id 规范化为非负整数；无效时返回 ``None``。"""
+
+    try:
+        face_id = int(value)
+    except (TypeError, ValueError):
+        return None
+    if face_id < 0 or face_id > 99999:
+        return None
+    return face_id
+
+
+def sanitize_entry_faces(entry: dict) -> None:
+    """就地清理 entry 中的 QQ face 字段，移除无效 id。"""
+
+    if not isinstance(entry, dict):
+        return
+
+    cleaned_faces: List[dict] = []
+    for face in entry.get("faces") or []:
+        if not isinstance(face, dict):
+            continue
+        face_id = _normalize_face_id(face.get("id"))
+        if face_id is not None:
+            cleaned_faces.append({"id": face_id})
+    entry["faces"] = cleaned_faces
+
+    parts = entry.get("parts")
+    if not isinstance(parts, list):
+        return
+    for part in parts:
+        if not isinstance(part, dict):
+            continue
+        for seg in KeywordsStore.get_part_segments(part):
+            if not isinstance(seg, dict) or str(seg.get("type") or "").strip().lower() != "face":
+                continue
+            face_id = _normalize_face_id(seg.get("id"))
+            if face_id is None:
+                seg.pop("id", None)
+            else:
+                seg["id"] = face_id
+
+
+def _build_face_send_segment(face_id: int) -> dict:
+    """构造 MaiBot 可透传的 QQ face 段（经 ``dict`` 包装保留 ``type``）。"""
+
+    return {"type": "dict", "data": {"type": "face", "data": {"id": face_id}}}
+
+
 def sanitize_entry_text(entry: dict, store: KeywordsStore) -> dict:
-    """整理 entry：去重 At、剥离重复 @ 文本、移除 VLM 媒体占位描述。"""
+    """整理 entry：去重 At、剥离重复 @ 文本、移除 VLM 媒体占位描述、规范化 face。"""
 
     if not isinstance(entry, dict):
         return entry
 
+    sanitize_entry_faces(entry)
     entry["ats"] = dedupe_entry_ats(entry.get("ats") or [])
     entry["text"] = strip_text_at_mentions(str(entry.get("text", "") or ""), entry["ats"])
+    entry["text"] = strip_auto_media_text(str(entry.get("text", "") or ""))
+
+    for part in entry.get("parts") or []:
+        if not isinstance(part, dict):
+            continue
+        for seg in KeywordsStore.get_part_segments(part):
+            if not isinstance(seg, dict) or str(seg.get("type") or "").strip().lower() != "text":
+                continue
+            seg["text"] = strip_auto_media_text(str(seg.get("text") or ""))
 
     has_media = bool(
-        entry.get("images") or entry.get("records") or entry.get("emojis") or entry.get("music_cards")
+        entry.get("images")
+        or entry.get("records")
+        or entry.get("emojis")
+        or entry.get("music_cards")
+        or entry.get("faces")
+        or any(
+            KeywordsStore._segment_has_payload(seg)
+            for part in entry.get("parts") or []
+            if isinstance(part, dict)
+            for seg in KeywordsStore.get_part_segments(part)
+        )
     )
-    if has_media:
-        entry["text"] = strip_auto_media_text(str(entry.get("text", "") or ""))
-        if entry.get("music_cards"):
-            entry["text"] = _strip_music_share_text(entry["text"])
+    if has_media and entry.get("music_cards"):
+        entry["text"] = _strip_music_share_text(entry["text"])
+        for part in entry.get("parts") or []:
+            if isinstance(part, dict) and str(part.get("type") or "").strip().lower() == "text":
+                part["text"] = _strip_music_share_text(str(part.get("text") or ""))
     return entry
 
 
@@ -621,8 +810,10 @@ def _part_to_segments(
             )
         return segments
 
-    if part_type == "face" and part.get("id") is not None:
-        segments.append({"type": "face", "data": {"id": part.get("id")}})
+    if part_type == "face":
+        face_id = _normalize_face_id(part.get("id"))
+        if face_id is not None:
+            segments.append(_build_face_send_segment(face_id))
         return segments
 
     if part_type == "music":
@@ -669,16 +860,17 @@ def build_send_segments(
 
     parts = store.get_ordered_parts(entry)
     if parts:
-        for part in parts:
-            segments.extend(
-                _part_to_segments(
-                    part,
-                    store,
-                    message,
-                    enable_template=enable_template,
-                    render=render,
+        for message_part in parts:
+            for part_segment in KeywordsStore.get_part_segments(message_part):
+                segments.extend(
+                    _part_to_segments(
+                        part_segment,
+                        store,
+                        message,
+                        enable_template=enable_template,
+                        render=render,
+                    )
                 )
-            )
         return segments
 
     for at in entry.get("ats", []):
@@ -698,7 +890,9 @@ def build_send_segments(
         segments.append({"type": "text", "content": text})
 
     for face in entry.get("faces", []):
-        segments.append({"type": "face", "data": {"id": face.get("id")}})
+        face_id = _normalize_face_id((face or {}).get("id"))
+        if face_id is not None:
+            segments.append(_build_face_send_segment(face_id))
 
     for music in entry.get("music_cards", []):
         music_segment = _build_music_send_segment(music or {})
@@ -746,21 +940,22 @@ def build_ordered_send_batches(
         return [segments] if segments else []
 
     batches: List[List[dict]] = []
-    for index, part in enumerate(entry.get("parts", [])):
-        if not isinstance(part, dict) or not KeywordsStore._part_has_payload(part):
+    for index, message_part in enumerate(entry.get("parts", [])):
+        if not isinstance(message_part, dict) or not KeywordsStore._part_has_payload(message_part):
             continue
         segments: List[dict] = []
         if quote and index == 0:
             _append_reply_segment(segments, message)
-        segments.extend(
-            _part_to_segments(
-                part,
-                store,
-                message,
-                enable_template=enable_template,
-                render=render,
+        for part_segment in KeywordsStore.get_part_segments(message_part):
+            segments.extend(
+                _part_to_segments(
+                    part_segment,
+                    store,
+                    message,
+                    enable_template=enable_template,
+                    render=render,
+                )
             )
-        )
         if segments:
             batches.append(segments)
     return batches

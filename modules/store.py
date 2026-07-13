@@ -141,7 +141,49 @@ class KeywordsStore:
                     entry.setdefault("faces", [])
                     entry.setdefault("emojis", [])
                     entry.setdefault("music_cards", [])
+                    KeywordsStore._sanitize_entry_fields(entry)
         return data
+
+    @staticmethod
+    def _sanitize_entry_fields(entry: dict) -> None:
+        """加载时规范化 entry 字段，避免无效 face id 或占位文本残留。"""
+
+        from .media import sanitize_entry_faces
+        from .templates import strip_auto_media_text
+
+        sanitize_entry_faces(entry)
+        entry["text"] = strip_auto_media_text(str(entry.get("text", "") or ""))
+        for part in entry.get("parts") or []:
+            if not isinstance(part, dict):
+                continue
+            for seg in KeywordsStore.get_part_segments(part):
+                if str(seg.get("type") or "").strip().lower() == "text":
+                    seg["text"] = strip_auto_media_text(str(seg.get("text") or ""))
+
+    @staticmethod
+    def migrate_entry_to_parts(entry: dict, *, clear_legacy: bool = True) -> bool:
+        """把仍使用旧扁平字段的 entry 转为 ``parts[]`` 格式。
+
+        返回 ``True`` 表示发生了迁移。迁移后若 ``parts`` 含多条有效内容，
+        触发时将按条分开发送（与旧版单条混合消息不同）。
+        """
+
+        if not isinstance(entry, dict) or KeywordsStore.uses_ordered_parts(entry):
+            return False
+        if not KeywordsStore.entry_has_payload(entry):
+            return False
+
+        parts = KeywordsStore.legacy_entry_to_parts(entry)
+        if not parts:
+            return False
+
+        entry["parts"] = parts
+        KeywordsStore._sanitize_entry_fields(entry)
+        if clear_legacy:
+            entry["text"] = ""
+            for key in ("images", "records", "ats", "faces", "emojis", "music_cards"):
+                entry[key] = []
+        return True
 
     @staticmethod
     def _migrate_legacy_entry_chance(entry: dict) -> None:
@@ -283,7 +325,30 @@ class KeywordsStore:
         }
 
     @staticmethod
-    def _part_has_payload(part: Optional[dict]) -> bool:
+    def is_message_part(part: Optional[dict]) -> bool:
+        """是否为「一条聊天消息」part（内含可合并发送的 ``segments``）。"""
+
+        return isinstance(part, dict) and isinstance(part.get("segments"), list)
+
+    @staticmethod
+    def get_part_segments(part: Optional[dict]) -> List[dict]:
+        """展开 part 为有序 segment 列表。
+
+        - ``{"segments": [...]}``：一条消息内的多段富文本；
+        - ``{"type": "text", ...}`` 等：兼容旧数据，视为仅含一段的消息。
+        """
+
+        if not isinstance(part, dict):
+            return []
+        nested = part.get("segments")
+        if isinstance(nested, list):
+            return [seg for seg in nested if isinstance(seg, dict) and KeywordsStore._segment_has_payload(seg)]
+        if KeywordsStore._segment_has_payload(part):
+            return [part]
+        return []
+
+    @staticmethod
+    def _segment_has_payload(part: Optional[dict]) -> bool:
         if not isinstance(part, dict):
             return False
         part_type = str(part.get("type") or "").strip().lower()
@@ -304,8 +369,19 @@ class KeywordsStore:
         return False
 
     @staticmethod
+    def _part_has_payload(part: Optional[dict]) -> bool:
+        return bool(KeywordsStore.get_part_segments(part))
+
+    @staticmethod
+    def make_message_part(segments: List[dict]) -> dict:
+        """把多条 segment 打包为「一条聊天消息」part。"""
+
+        cleaned = [seg for seg in segments if isinstance(seg, dict) and KeywordsStore._segment_has_payload(seg)]
+        return {"segments": cleaned}
+
+    @staticmethod
     def uses_ordered_parts(entry: Optional[dict]) -> bool:
-        """entry 是否显式使用有序 parts 列表（每条 part 单独发送）。"""
+        """entry 是否显式使用 ``parts`` 列表（每个 part 对应一条聊天消息）。"""
 
         entry = entry or {}
         parts = entry.get("parts")
@@ -315,17 +391,17 @@ class KeywordsStore:
 
     @staticmethod
     def legacy_entry_to_parts(entry: Optional[dict]) -> List[dict]:
-        """把旧版扁平 entry 字段转换为有序 parts（用于读取兼容）。"""
+        """把旧版扁平 entry 转为单条消息的 ``parts``（段顺序与旧版 hybrid 拼装一致）。"""
 
         entry = entry or {}
-        parts: List[dict] = []
+        segments: List[dict] = []
         text = (entry.get("text") or "").strip()
         if text:
-            parts.append({"type": "text", "text": text})
+            segments.append({"type": "text", "text": text})
         for at in entry.get("ats", []):
             if not isinstance(at, dict):
                 continue
-            parts.append(
+            segments.append(
                 {
                     "type": "at",
                     "user_id": str(at.get("user_id", "") or ""),
@@ -335,13 +411,13 @@ class KeywordsStore:
             )
         for face in entry.get("faces", []):
             if isinstance(face, dict) and face.get("id") is not None:
-                parts.append({"type": "face", "id": face.get("id")})
+                segments.append({"type": "face", "id": face.get("id")})
         for music in entry.get("music_cards", []):
             if not isinstance(music, dict):
                 continue
             song_id = str(music.get("id") or "").strip()
             if song_id:
-                parts.append(
+                segments.append(
                     {
                         "type": "music",
                         "platform": str(music.get("platform") or "163"),
@@ -350,18 +426,20 @@ class KeywordsStore:
                 )
         for img in entry.get("images", []):
             if isinstance(img, dict) and (img.get("file") or "").strip():
-                parts.append({"type": "image", "file": str(img.get("file") or "").strip()})
+                segments.append({"type": "image", "file": str(img.get("file") or "").strip()})
         for emoji in entry.get("emojis", []):
             if isinstance(emoji, dict) and (emoji.get("file") or "").strip():
-                parts.append({"type": "emoji", "file": str(emoji.get("file") or "").strip()})
+                segments.append({"type": "emoji", "file": str(emoji.get("file") or "").strip()})
         for voice in entry.get("records", []):
             if isinstance(voice, dict) and (voice.get("file") or "").strip():
-                parts.append({"type": "voice", "file": str(voice.get("file") or "").strip()})
-        return parts
+                segments.append({"type": "voice", "file": str(voice.get("file") or "").strip()})
+        if not segments:
+            return []
+        return [KeywordsStore.make_message_part(segments)]
 
     @staticmethod
     def get_ordered_parts(entry: Optional[dict]) -> List[dict]:
-        """返回 entry 的有序 parts；无 parts 时从旧字段推导。"""
+        """返回 entry 的消息级 ``parts``；无 ``parts`` 时从旧字段推导为单条消息。"""
 
         entry = entry or {}
         if KeywordsStore.uses_ordered_parts(entry):

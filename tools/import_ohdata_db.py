@@ -83,33 +83,34 @@ def parse_answer_variant(raw: str, probability: int) -> dict:
         return entry
 
     parts: List[dict] = []
-    segments = [p.strip() for p in text.split("&") if p.strip()]
+    message_parts = [p.strip() for p in text.split("&") if p.strip()]
 
-    for part in segments:
+    for message_text in message_parts:
+        segments: List[dict] = []
         cursor = 0
-        for m in _CQ_PATTERN.finditer(part):
+        for m in _CQ_PATTERN.finditer(message_text):
             if m.start() > cursor:
-                chunk = part[cursor : m.start()].strip()
+                chunk = message_text[cursor : m.start()].strip()
                 if chunk:
-                    parts.append({"type": "text", "text": chunk})
+                    segments.append({"type": "text", "text": chunk})
             cq_type = m.group(1).lower()
             params = parse_cq_params(m.group(2) or "")
             if cq_type == "image":
                 file_name = params.get("file", "").strip()
                 if file_name:
-                    parts.append({"type": "image", "file": file_name})
+                    segments.append({"type": "image", "file": file_name})
             elif cq_type in {"record", "voice"}:
                 file_name = params.get("file", "").strip()
                 if file_name:
-                    parts.append({"type": "voice", "file": file_name})
+                    segments.append({"type": "voice", "file": file_name})
             elif cq_type == "face":
                 face_id = params.get("id", "").strip()
                 if face_id.isdigit():
-                    parts.append({"type": "face", "id": int(face_id)})
+                    segments.append({"type": "face", "id": int(face_id)})
             elif cq_type == "at":
                 user_id = params.get("qq", params.get("id", "")).strip()
                 if user_id:
-                    parts.append(
+                    segments.append(
                         {
                             "type": "at",
                             "user_id": user_id,
@@ -118,10 +119,12 @@ def parse_answer_variant(raw: str, probability: int) -> dict:
                         }
                     )
             cursor = m.end()
-        if cursor < len(part):
-            tail = part[cursor:].strip()
+        if cursor < len(message_text):
+            tail = message_text[cursor:].strip()
             if tail:
-                parts.append({"type": "text", "text": tail})
+                segments.append({"type": "text", "text": tail})
+        if segments:
+            parts.append(KeywordsStore.make_message_part(segments))
 
     if parts:
         entry["parts"] = parts

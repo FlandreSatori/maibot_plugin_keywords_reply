@@ -98,3 +98,54 @@ data/plugins/maibot_plugin.keywords_reply/records/
 2. 复制到插件数据目录并重命名为 `keywords.json`
 3. 复制媒体文件
 4. 在 MaiBot 执行 `/重载词库`，或用外部编辑器打开后保存
+
+## 4. 一键规范化全部词条
+
+将现有 `keywords.json` 批量补全字段、清洗无效 face/占位文本，并把旧版 `text`/`faces`/`images` 等扁平字段迁移为 `parts[].segments[]` 新格式。
+
+```bash
+cd plugins/maibot_plugin_keywords_reply
+
+# 先预览（不写盘）
+python tools/migrate_to_parts.py --dry-run
+
+# 指定数据文件（推荐显式路径）
+python tools/migrate_to_parts.py "C:/path/to/MaiBot/data/plugins/maibot_plugin.keywords_reply/keywords.json"
+
+# 使用默认查找路径（插件目录或 data/plugins/.../keywords.json）
+python tools/migrate_to_parts.py
+```
+
+| 参数 | 说明 |
+| :-- | :-- |
+| `--dry-run` | 只统计会改多少条，不写回文件 |
+| `--keep-legacy` | 迁移后保留 `text`/`images` 等旧字段（默认会清空，只留 `parts`） |
+
+示例：旧格式
+
+```json
+{
+  "text": "我喜欢动漫，\r\n是因为...",
+  "faces": [{"id": 13}],
+  "parts": []
+}
+```
+
+规范化后（默认清空旧字段）：
+
+```json
+{
+  "text": "",
+  "faces": [],
+  "parts": [
+    {
+      "segments": [
+        {"type": "text", "text": "我喜欢动漫，\r\n是因为..."},
+        {"type": "face", "id": 13}
+      ]
+    }
+  ]
+}
+```
+
+执行完成后在群聊发送 **`/重载词库`**。`/重载词库` 本身只重新读取磁盘，不会自动做迁移；迁移须先运行上述脚本或在外部编辑器保存。
