@@ -174,7 +174,7 @@ function fieldToMediaFiles(raw, kind) {
 }
 
 const PART_TYPES = [
-  { key: "text", label: "文本", addLabel: "文本", placeholder: "回复文本，换行输入 \\r\\n" },
+  { key: "text", label: "文本", addLabel: "文本", placeholder: "回复文本，换行可用 \\r\\n" },
   { key: "image", label: "图片", addLabel: "图片", placeholder: "images/a.jpg" },
   { key: "voice", label: "语音", addLabel: "语音", placeholder: "records/a.silk" },
   { key: "emoji", label: "表情", addLabel: "表情", placeholder: "emojis/a.gif" },
@@ -727,6 +727,116 @@ function setStatus(text, isError = false) {
   const el = $("statusBar");
   el.textContent = text;
   el.style.color = isError ? "#ff6b6b" : "";
+}
+
+const toastState = { seq: 0 };
+
+function yieldToUi() {
+  return new Promise((resolve) => {
+    requestAnimationFrame(() => setTimeout(resolve, 0));
+  });
+}
+
+function createProgressToast(title, message = "处理中…") {
+  const container = $("toastContainer");
+  const id = `toast-${++toastState.seq}`;
+  const el = document.createElement("article");
+  el.className = "toast is-loading";
+  el.dataset.toastId = id;
+  el.innerHTML = `
+    <div class="toast-header">
+      <span class="toast-title">${escapeHtml(title)}</span>
+      <button type="button" class="toast-close secondary" aria-label="关闭">×</button>
+    </div>
+    <p class="toast-message">${escapeHtml(message)}</p>
+    <div class="toast-progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+      <div class="toast-progress-fill"></div>
+    </div>
+  `;
+
+  const titleEl = el.querySelector(".toast-title");
+  const messageEl = el.querySelector(".toast-message");
+  const progressBar = el.querySelector('[role="progressbar"]');
+  const progressFill = el.querySelector(".toast-progress-fill");
+  const closeBtn = el.querySelector(".toast-close");
+  let dismissTimer = null;
+  let creepTimer = null;
+  let currentProgress = 0;
+
+  const clearTimers = () => {
+    if (dismissTimer) {
+      clearTimeout(dismissTimer);
+      dismissTimer = null;
+    }
+    if (creepTimer) {
+      clearInterval(creepTimer);
+      creepTimer = null;
+    }
+  };
+
+  const dismiss = (delayMs = 0) => {
+    clearTimers();
+    const run = () => {
+      el.classList.add("is-dismissing");
+      setTimeout(() => el.remove(), 220);
+    };
+    if (delayMs > 0) dismissTimer = setTimeout(run, delayMs);
+    else run();
+  };
+
+  const setProgress = (percent, nextMessage) => {
+    currentProgress = Math.max(currentProgress, Math.min(100, Math.round(percent)));
+    progressFill.style.width = `${currentProgress}%`;
+    progressBar.setAttribute("aria-valuenow", String(currentProgress));
+    if (nextMessage) messageEl.textContent = nextMessage;
+  };
+
+  const startCreep = () => {
+    creepTimer = setInterval(() => {
+      if (currentProgress < 88) setProgress(currentProgress + 2);
+    }, 320);
+  };
+
+  const finish = (kind, finalMessage, autoDismissMs = 2800) => {
+    clearTimers();
+    el.classList.remove("is-loading");
+    el.classList.add(kind === "error" ? "is-error" : "is-success");
+    setProgress(100, finalMessage);
+    dismiss(kind === "error" ? 5200 : autoDismissMs);
+  };
+
+  closeBtn.addEventListener("click", () => dismiss());
+
+  container.appendChild(el);
+  setProgress(8);
+  startCreep();
+
+  return {
+    setProgress,
+    succeed(message) {
+      finish("success", message);
+    },
+    fail(message) {
+      finish("error", message);
+    },
+    dismiss,
+  };
+}
+
+async function runWithProgressToast(title, task, { successMessage } = {}) {
+  const toast = createProgressToast(title);
+  try {
+    const result = await task((percent, message) => toast.setProgress(percent, message));
+    const finalMessage =
+      typeof successMessage === "function"
+        ? successMessage(result)
+        : successMessage || (typeof result === "string" ? result : "操作完成");
+    toast.succeed(finalMessage);
+    return result;
+  } catch (err) {
+    toast.fail(err.message || "操作失败");
+    throw err;
+  }
 }
 
 function markDirty() {
@@ -1292,33 +1402,65 @@ function applyBatchGroup() {
   setStatus(`已批量更新 ${state.selected.size} 个词条的群策略`);
 }
 
-async function loadData() {
-  setStatus("正在加载词库…");
-  const res = await fetch("/api/data");
-  const payload = await res.json();
-  if (!payload.ok) throw new Error(payload.error || "加载失败");
-  state.data = payload.data;
-  state.path = payload.path;
-  state.selected.clear();
-  state.dirty = false;
-  state.page = 1;
-  rebuildSearchHay();
-  $("pathMeta").textContent = `数据文件: ${payload.path}`;
-  const total = (state.data.command_triggered?.length || 0) + (state.data.auto_detect?.length || 0);
-  setStatus(`已加载 ${total} 条词条`);
-  refreshList();
+async function loadData({ toastTitle = "加载词库" } = {}) {
+  return runWithProgressToast(
+    toastTitle,
+    async (report) => {
+      report(12, "连接服务器…");
+      const res = await fetch("/api/data");
+      report(62, "解析词库数据…");
+      const payload = await res.json();
+      if (!payload.ok) throw new Error(payload.error || "加载失败");
+      report(86, "刷新列表…");
+      state.data = payload.data;
+      state.path = payload.path;
+      state.selected.clear();
+      state.dirty = false;
+      state.page = 1;
+      rebuildSearchHay();
+      $("pathMeta").textContent = `数据文件: ${payload.path}`;
+      refreshList();
+      return payload;
+    },
+    {
+      successMessage: (payload) => {
+        const total =
+          (state.data.command_triggered?.length || 0) + (state.data.auto_detect?.length || 0);
+        setStatus(`已加载 ${total} 条词条`);
+        return `已加载 ${total} 条词条`;
+      },
+    },
+  );
 }
 
 async function saveData() {
-  const res = await fetch("/api/data", {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ data: state.data }),
-  });
-  const payload = await res.json();
-  if (!payload.ok) throw new Error(payload.error || "保存失败");
-  state.dirty = false;
-  setStatus(`已保存 · 关键词 ${payload.keyword_count} · 检测词 ${payload.detect_count}`);
+  return runWithProgressToast(
+    "保存到磁盘",
+    async (report) => {
+      report(14, "序列化词库…");
+      await yieldToUi();
+      const body = JSON.stringify({ data: state.data });
+      report(38, "正在写入磁盘…");
+      const res = await fetch("/api/data", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body,
+      });
+      report(72, "等待服务器确认…");
+      const payload = await res.json();
+      if (!payload.ok) throw new Error(payload.error || "保存失败");
+      report(92, "更新状态…");
+      state.dirty = false;
+      return payload;
+    },
+    {
+      successMessage: (payload) => {
+        const text = `已保存 · 关键词 ${payload.keyword_count} · 检测词 ${payload.detect_count}`;
+        setStatus(text);
+        return text;
+      },
+    },
+  );
 }
 
 function batchUpdate(mutator) {
@@ -1430,7 +1572,7 @@ function bindEvents() {
 
   $("btnReload").addEventListener("click", () => {
     if (state.dirty && !confirm("有未保存修改，确定重新加载？")) return;
-    loadData().catch((err) => setStatus(err.message, true));
+    loadData({ toastTitle: "重新加载" }).catch((err) => setStatus(err.message, true));
   });
   $("btnSave").addEventListener("click", () => saveData().catch((err) => setStatus(err.message, true)));
   $("btnAddRule").addEventListener("click", () => openRuleModal(-1));
@@ -1610,26 +1752,59 @@ function bindEvents() {
   });
 
   $("btnExport").addEventListener("click", () => {
-    const blob = new Blob([JSON.stringify(state.data, null, 2)], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = "keywords.json";
-    a.click();
-    URL.revokeObjectURL(url);
+    runWithProgressToast(
+      "导出 JSON",
+      async (report) => {
+        report(18, "准备词库数据…");
+        await yieldToUi();
+        report(48, "生成 JSON 文件…");
+        const blob = new Blob([JSON.stringify(state.data, null, 2)], { type: "application/json" });
+        report(78, "触发下载…");
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = "keywords.json";
+        a.click();
+        URL.revokeObjectURL(url);
+        return "keywords.json";
+      },
+      { successMessage: (name) => {
+        const text = `已导出 ${name}`;
+        setStatus(text);
+        return text;
+      } },
+    ).catch((err) => setStatus(err.message, true));
   });
 
   $("importFile").addEventListener("change", async (ev) => {
     const file = ev.target.files?.[0];
     if (!file) return;
     try {
-      state.data = JSON.parse(await file.text());
-      state.selected.clear();
-      state.page = 1;
-      rebuildSearchHay();
-      markDirty();
-      refreshList();
-      setStatus(`已导入 ${file.name}，请检查后保存`);
+      await runWithProgressToast(
+        "导入 JSON",
+        async (report) => {
+          report(16, `读取 ${file.name}…`);
+          const text = await file.text();
+          report(52, "解析 JSON…");
+          await yieldToUi();
+          const data = JSON.parse(text);
+          report(84, "刷新编辑器…");
+          state.data = data;
+          state.selected.clear();
+          state.page = 1;
+          rebuildSearchHay();
+          markDirty();
+          refreshList();
+          return file.name;
+        },
+        {
+          successMessage: (name) => {
+            const text = `已导入 ${name}，请检查后保存`;
+            setStatus(text);
+            return text;
+          },
+        },
+      );
     } catch (err) {
       setStatus(`导入失败: ${err.message}`, true);
     } finally {
@@ -1643,4 +1818,4 @@ function bindEvents() {
 }
 
 bindEvents();
-loadData().catch((err) => setStatus(err.message, true));
+loadData({ toastTitle: "加载词库" }).catch((err) => setStatus(err.message, true));

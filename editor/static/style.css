@@ -633,6 +633,116 @@ tr:hover td { background: rgba(91, 157, 255, 0.06); }
   margin: 0;
 }
 
+.toast-container {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 120;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: min(360px, calc(100vw - 32px));
+  pointer-events: none;
+}
+
+.toast {
+  pointer-events: auto;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px 14px;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.35);
+  animation: toast-in 0.22s ease-out;
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.toast-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+
+.toast-title {
+  font-size: 0.92rem;
+  font-weight: 600;
+}
+
+.toast-close {
+  min-width: 28px;
+  padding: 2px 8px;
+  line-height: 1.2;
+}
+
+.toast-message {
+  margin: 0 0 10px;
+  color: var(--muted);
+  font-size: 0.82rem;
+  line-height: 1.45;
+  word-break: break-word;
+}
+
+.toast-progress-track {
+  height: 5px;
+  border-radius: 999px;
+  background: var(--panel-2);
+  overflow: hidden;
+}
+
+.toast-progress-fill {
+  height: 100%;
+  width: 0%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--accent), var(--accent-2));
+  transition: width 0.28s ease;
+}
+
+.toast.is-loading .toast-progress-fill {
+  background: linear-gradient(90deg, var(--accent) 0%, #7eb6ff 50%, var(--accent) 100%);
+  background-size: 200% 100%;
+  animation: toast-progress-shimmer 1.2s linear infinite;
+}
+
+@keyframes toast-progress-shimmer {
+  0% { background-position: 100% 0; }
+  100% { background-position: -100% 0; }
+}
+
+.toast.is-success {
+  border-color: rgba(61, 220, 151, 0.45);
+}
+
+.toast.is-success .toast-progress-fill {
+  background: var(--ok);
+  animation: none;
+}
+
+.toast.is-error {
+  border-color: rgba(255, 107, 107, 0.45);
+}
+
+.toast.is-error .toast-progress-fill {
+  background: var(--danger);
+  animation: none;
+}
+
+.toast.is-dismissing {
+  opacity: 0;
+  transform: translateY(6px);
+  transition: opacity 0.2s ease, transform 0.2s ease;
+}
+
 @media (max-width: 960px) {
   main { grid-template-columns: 1fr; }
   .form-grid { grid-template-columns: 1fr; }
