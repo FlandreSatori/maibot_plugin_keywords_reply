@@ -60,15 +60,95 @@ _EDIT_REPLY_COMMAND_PREFIX = re.compile(
     r"^/(?:编辑)(?:关键词|检测词)回复\s+\S+\s+\d+(?:\s+(?P<body>[\s\S]+))?$",
     re.IGNORECASE,
 )
-_PROCESSED_REPLY_QUOTE_PREFIX = re.compile(
-    r"^\[(?:"
-    r"回复了.+?的消息:\s*[^\]]*|"
-    r"回复了一条消息，但原消息已无法访问|"
-    r"引用[：:][^\]]*|"
-    r"引用消息"
-    r")\]\s*",
-    re.DOTALL,
-)
+def _find_matching_bracket_end(text: str, start: int = 0) -> int:
+    """返回从 ``start`` 处 ``[`` 配对的 ``]`` 下标；失败返回 -1。"""
+
+    if start < 0 or start >= len(text) or text[start] != "[":
+        return -1
+    depth = 0
+    for index in range(start, len(text)):
+        ch = text[index]
+        if ch == "[":
+            depth += 1
+        elif ch == "]":
+            depth -= 1
+            if depth == 0:
+                return index
+    return -1
+
+
+def message_has_reply_context(message: Optional[Dict[str, Any]]) -> bool:
+    """判断消息是否为引用/回复消息。"""
+
+    return bool(_extract_reply_target_id(message or {}))
+
+
+def extract_user_typed_plain_text(message: Optional[Dict[str, Any]]) -> str:
+    """仅提取用户本条消息自己输入的文本段（不含 reply 段与引用正文）。"""
+
+    return extract_management_command_text(message or {})
+
+
+def resolve_match_plain_text(
+    message: Optional[Dict[str, Any]],
+    *,
+    respond_to_triggers_in_quote: bool,
+) -> str:
+    """按配置得到用于关键词/检测词匹配的正文。
+
+    ``respond_to_triggers_in_quote=False`` 时：
+    - 若存在引用，只匹配用户自己输入的文本段；
+    - 否则再剥离 ``processed_plain_text`` 中的引用前缀（兼容嵌套 ``[]``）。
+    """
+
+    message = message if isinstance(message, dict) else {}
+    full = str(message.get("processed_plain_text", "") or "").strip()
+    if respond_to_triggers_in_quote:
+        return full
+    if message_has_reply_context(message):
+        return extract_user_typed_plain_text(message)
+    return strip_processed_reply_quote_prefix(full)
+
+
+def strip_processed_reply_quote_prefix(text: str) -> str:
+    """剥离 MaiBot 在 ``processed_plain_text`` 中注入的引用说明前缀。
+
+    覆盖常见形态：``[回复了…的消息: …]``、``[引用：…]``、``[引用消息]`` 等。
+    使用括号深度匹配，避免引用正文内的 ``[图片…]`` 等提前截断。
+    """
+
+    normalized = str(text or "").strip()
+    if not normalized:
+        return ""
+
+    if normalized.startswith("[回复了一条消息，但原消息已无法访问]"):
+        return normalized[len("[回复了一条消息，但原消息已无法访问]") :].strip()
+
+    if normalized.startswith("[回复了"):
+        end = _find_matching_bracket_end(normalized, 0)
+        if end != -1 and "的消息:" in normalized[: end + 1]:
+            return normalized[end + 1 :].lstrip()
+
+    if normalized.startswith("[引用：") or normalized.startswith("[引用:"):
+        end = _find_matching_bracket_end(normalized, 0)
+        if end != -1:
+            return normalized[end + 1 :].lstrip()
+
+    if normalized.startswith("[引用消息]"):
+        return normalized[len("[引用消息]") :].lstrip()
+
+    if normalized.startswith("[回复消息]"):
+        return normalized[len("[回复消息]") :].lstrip()
+
+    # 兼容旧正则路径（CQ / 极简占位）
+    for pattern in (
+        re.compile(r"^\[CQ:reply[^\]]*\]\s*", re.IGNORECASE),
+        re.compile(r"^\[reply\]\s*", re.IGNORECASE),
+    ):
+        updated = pattern.sub("", normalized, count=1)
+        if updated != normalized:
+            return updated.strip()
+    return normalized
 
 
 def extract_inline_ats(text: str) -> tuple[str, List[dict]]:
@@ -843,18 +923,6 @@ def is_management_command_message(message: Dict[str, Any]) -> bool:
 
     text = extract_management_command_text(message)
     return bool(text and _MGMT_COMMAND_PATTERN.search(text))
-
-
-def strip_processed_reply_quote_prefix(text: str) -> str:
-    """剥离 MaiBot 在 ``processed_plain_text`` 中注入的引用说明前缀。
-
-    覆盖常见形态：``[回复了…的消息: …]``、``[引用：…]``、``[引用消息]`` 等。
-    """
-
-    normalized = str(text or "").strip()
-    if not normalized:
-        return ""
-    return _PROCESSED_REPLY_QUOTE_PREFIX.sub("", normalized, count=1).strip()
 
 
 def _strip_processed_reply_quote_prefix(text: str) -> str:

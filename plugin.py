@@ -44,8 +44,8 @@ from .modules.media import (
     extract_inline_ats,
     is_management_command_message,
     normalize_music_platform,
+    resolve_match_plain_text,
     sanitize_entry_text,
-    strip_processed_reply_quote_prefix,
     supported_music_platforms_text,
 )
 from .modules.store import KeywordsStore
@@ -1232,12 +1232,13 @@ class KeywordsReplyPlugin(MaiBotPlugin):
         if message.get("is_command") or any(text.startswith(p) for p in self._MGMT_PREFIXES):
             return "none"
 
-        # 默认忽略引用前缀内的触发词，只匹配用户实际发送的正文。
-        match_text = text
-        if not self.config.reply.respond_to_triggers_in_quote:
-            match_text = strip_processed_reply_quote_prefix(text)
-            if not match_text:
-                return "none"
+        # 默认忽略引用正文里的触发词：有 reply 时只匹配用户自己输入的文本。
+        match_text = resolve_match_plain_text(
+            message,
+            respond_to_triggers_in_quote=bool(self.config.reply.respond_to_triggers_in_quote),
+        )
+        if not match_text:
+            return "none"
 
         info = message.get("message_info", {}) if isinstance(message.get("message_info"), dict) else {}
         group_info = info.get("group_info") or {}
