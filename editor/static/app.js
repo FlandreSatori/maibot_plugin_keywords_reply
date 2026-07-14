@@ -129,7 +129,7 @@ function renderAliasRows() {
     .map(
       (row) => `
       <div class="alias-row" data-alias-id="${row.id}">
-        <input data-alias-text placeholder="别名触发词（可含空格）" value="${escapeHtml(row.text || "")}" />
+        <input data-alias-text placeholder="别名" value="${escapeHtml(row.text || "")}" />
         <button type="button" class="danger" data-alias-del="${row.id}">删除</button>
       </div>`
     )
@@ -1639,11 +1639,34 @@ function selectAllRules() {
     setStatus("当前分类下没有词条");
     return;
   }
-  for (let index = 0; index < rules.length; index += 1) {
-    state.selected.add(index);
+  const total = rules.length;
+  let selectedCount = 0;
+  for (let index = 0; index < total; index += 1) {
+    if (state.selected.has(index)) selectedCount += 1;
+  }
+
+  if (selectedCount === 0) {
+    for (let index = 0; index < total; index += 1) {
+      state.selected.add(index);
+    }
+    queueRender();
+    setStatus(`已全选 ${total} 条词条`);
+    return;
+  }
+
+  if (selectedCount === total) {
+    state.selected.clear();
+    queueRender();
+    setStatus("已取消全选");
+    return;
+  }
+
+  for (let index = 0; index < total; index += 1) {
+    if (state.selected.has(index)) state.selected.delete(index);
+    else state.selected.add(index);
   }
   queueRender();
-  setStatus(`已全选 ${rules.length} 条词条`);
+  setStatus(`已反选（当前选中 ${state.selected.size} 条）`);
 }
 
 function bindEvents() {
