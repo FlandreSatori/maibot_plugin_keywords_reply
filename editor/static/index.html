@@ -115,10 +115,6 @@
             <label>触发词</label>
             <input id="ruleKeyword" placeholder="主触发词（可含空格）" />
           </div>
-          <div>
-            <label>别名（可选）</label>
-            <input id="ruleAliases" placeholder="用 | 或逗号分隔，例如 hello | hi" />
-          </div>
           <div class="checkbox-row">
             <label><input type="checkbox" id="ruleEnabled" checked /> 启用</label>
             <label><input type="checkbox" id="ruleRegex" /> 正则</label>
@@ -136,7 +132,17 @@
             <input id="ruleGroups" placeholder="123456,789012" />
           </div>
         </div>
-        <p class="hint">同一词条可用多个别名触发，无需重复建相同回复。创建副本会复制回复内容，但触发词留空，填写后点确定才会写入。</p>
+
+        <div class="alias-section">
+          <div class="reply-section-head">
+            <h4>别名</h4>
+            <div class="reply-section-tools">
+              <button type="button" class="secondary" id="btnAddAlias">添加别名</button>
+            </div>
+          </div>
+          <div id="aliasRows" class="alias-rows"></div>
+          <p class="hint">别名与主触发词等效；点「添加别名」逐条增加，无需重复建相同回复。创建副本会复制回复，触发词与别名留空，填写后确定才写入。</p>
+        </div>
 
         <div class="reply-section">
           <div class="reply-section-head">
@@ -168,7 +174,7 @@
             <span id="replyPageInfo">第 1 / 1 页</span>
             <button type="button" class="secondary" id="btnReplyNext">下一页</button>
           </div>
-          <p class="hint">每条带边框的回复对应一个 <code>entry</code>（权重/概率）。其内每个<strong>消息组</strong>对应触发后发送的一条聊天消息；组内多行（文本 / QQ表情 / 图片…）会合并到同一条消息里并按顺序发送。长按 ⠿ 可在<strong>同一消息内</strong>拖动排序；<strong>+ 添加下一条消息</strong> 用于 OhData 的 <code>&</code> 分隔。</p>
+          <p class="hint">一个复选框对应一个<strong>消息组</strong>，其内包含触发后发送的多条聊天消息；一条消息内多行（文本 / QQ表情 / 图片…）会拼接到同一条消息里发送。长按 ⠿ 可在<strong>同一消息内</strong>拖动排序；<strong>+ 添加下一条消息</strong> ，会按消息1,消息2...的顺序发出</p>
         </div>
       </div>
 

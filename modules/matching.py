@@ -66,9 +66,9 @@ def normalize_aliases(value: Any) -> List[str]:
 
 
 def parse_trigger_field_and_body(args: str) -> tuple[List[str], str]:
-    """解析添加命令参数中的触发词字段与回复正文。
+    """解析命令参数中的首个触发词字段与剩余正文。
 
-    支持 ``词 回复``、``\"含 空格\" 回复``、``别名1|别名2|\"含 空格\" 回复``。
+    支持 ``词 回复``、``\"含 空格\" 回复``。别名请用「添加别名」单独追加，不再用 ``|`` 串联。
     """
 
     s = str(args or "")
@@ -79,35 +79,36 @@ def parse_trigger_field_and_body(args: str) -> tuple[List[str], str]:
     if i >= n:
         return [], ""
 
-    triggers: List[str] = []
-    while i < n:
-        if s[i] in "\"'":
-            quote = s[i]
+    if s[i] in "\"'":
+        quote = s[i]
+        i += 1
+        start = i
+        while i < n and s[i] != quote:
             i += 1
-            start = i
-            while i < n and s[i] != quote:
-                i += 1
-            triggers.append(s[start:i])
-            if i < n and s[i] == quote:
-                i += 1
-        else:
-            start = i
-            while i < n and (not s[i].isspace()) and s[i] != "|":
-                i += 1
-            triggers.append(s[start:i])
+        field = s[start:i]
+        if i < n and s[i] == quote:
+            i += 1
+    else:
+        start = i
+        while i < n and not s[i].isspace():
+            i += 1
+        field = s[start:i]
 
-        while i < n and s[i].isspace():
-            i += 1
-        if i < n and s[i] == "|":
-            i += 1
-            while i < n and s[i].isspace():
-                i += 1
-            continue
-        break
-
-    triggers = [t.strip() for t in triggers if t.strip()]
+    while i < n and s[i].isspace():
+        i += 1
+    field = field.strip()
     body = s[i:].strip()
-    return triggers, body
+    if body and len(body) >= 2 and body[0] == body[-1] and body[0] in "\"'":
+        body = body[1:-1].strip()
+    return ([field] if field else []), body
+
+
+def parse_selector_and_alias(args: str) -> tuple[str, str]:
+    """解析 ``<序号/内容> <别名>``，别名可带空格或引号。"""
+
+    fields, body = parse_trigger_field_and_body(args)
+    selector = fields[0] if fields else ""
+    return selector, body
 
 
 def trigger_matches_command(

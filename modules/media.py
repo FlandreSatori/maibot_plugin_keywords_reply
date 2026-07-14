@@ -46,7 +46,7 @@ _MUSIC_TEXT_PLACEHOLDER_PATTERN = re.compile(
 
 
 _MGMT_COMMAND_PATTERN = re.compile(
-    r"/(?:添加|编辑|删除|启用|禁用|查看)(?:关键词|检测词)(?:回复)?(?:\s|$)"
+    r"/(?:添加|编辑|删除|启用|禁用|查看)(?:关键词|检测词)(?:回复|别名)?(?:\s|$)"
 )
 _ADD_COMMAND_HEAD = re.compile(
     r"^/(?:添加)(?:关键词|检测词)\s+(?:-r\s+)?",

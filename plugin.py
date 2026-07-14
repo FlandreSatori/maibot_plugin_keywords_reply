@@ -27,6 +27,7 @@ from .modules.matching import (
     normalize_aliases,
     paginate_slice,
     parse_list_page_arg,
+    parse_selector_and_alias,
     parse_trigger_field_and_body,
     rule_triggers,
     summarize_rule_for_list,
@@ -79,6 +80,8 @@ REPLY_HELP_TEXT = """关键词回复插件 · 帮助
 /删除关键词回复 <序号/内容> [回复序号]
 /设置关键词需@ <序号/内容> on|off
 /设置关键词权重 <序号/内容> <回复序号> <权重>
+/添加关键词别名 <序号/内容> <别名>
+/删除关键词别名 <序号/内容> <别名或序号>
 
 【检测词】
 将上面命令中的「关键词」替换为「检测词」即可（列表命令：/查看检测词列表 [页码]）。
@@ -86,7 +89,7 @@ REPLY_HELP_TEXT = """关键词回复插件 · 帮助
 【说明】
 · -r 表示正则触发；回复可省略正文并引用一条消息导入
 · 触发词可含空格：用英文双引号包裹，例如 /添加关键词 "hello world" 你好
-· 多别名：用 | 分隔，例如 /添加关键词 你好|hello|"hi there" 回复内容
+· 别名请用 /添加关键词别名 或编辑器「添加别名」逐条追加，勿与主词挤在同一条命令里
 · 多条回复：先按权重抽取，再按概率判定是否发送
 · 列表支持分页，例如 /查看关键词列表 2 或 /查看关键词列表 第2页
 · 管理命令需管理员或白名单权限；词库文件可用 editor/ 外部编辑器维护"""
@@ -447,30 +450,23 @@ class KeywordsReplyPlugin(MaiBotPlugin):
             return await self._send(stream_id, f"{label}不能为空。")
 
         keyword = triggers[0]
-        aliases = triggers[1:]
 
         if is_regex:
-            for trigger in triggers:
-                if not is_safe_regex(trigger):
-                    return await self._send(stream_id, "正则表达式存在安全风险，请简化后重试。")
-                try:
-                    re.compile(trigger)
-                except Exception as exc:
-                    return await self._send(stream_id, f"无效的正则表达式: {exc}")
+            if not is_safe_regex(keyword):
+                return await self._send(stream_id, "正则表达式存在安全风险，请简化后重试。")
+            try:
+                re.compile(keyword)
+            except Exception as exc:
+                return await self._send(stream_id, f"无效的正则表达式: {exc}")
 
         entry = await self._build_entry(reply_text, message, command_mode="add", keyword=keyword)
         if not self.store.entry_has_payload(entry):
             return await self._send(stream_id, "回复内容不能为空。")
 
-        rule = None
-        for trigger in triggers:
-            rule = self._find_rule(section, trigger, is_regex)
-            if rule is not None:
-                break
+        rule = self._find_rule(section, keyword, is_regex)
         if rule is not None:
             rule["entries"].append(entry)
             rule["regex"] = is_regex
-            self._merge_aliases(rule, aliases)
             status = f"已为现有{label}添加新回复（当前共有 {len(rule['entries'])} 个回复）。"
             display = rule.get("keyword", keyword)
         else:
@@ -482,7 +478,7 @@ class KeywordsReplyPlugin(MaiBotPlugin):
                 status = f"已成功添加{label}。由于非群聊环境创建，已默认全局禁用。"
             rule = {
                 "keyword": keyword,
-                "aliases": normalize_aliases(aliases),
+                "aliases": [],
                 "entries": [entry],
                 "regex": is_regex,
                 "enabled": enabled,
@@ -495,9 +491,101 @@ class KeywordsReplyPlugin(MaiBotPlugin):
             display = keyword
 
         await self.store.save()
-        alias_hint = f"（别名: {' | '.join(rule.get('aliases') or [])}）" if rule.get("aliases") else ""
-        return await self._send(stream_id, f"成功操作{label}: {display}{alias_hint}\n{status}")
+        return await self._send(stream_id, f"成功操作{label}: {display}\n{status}")
 
+    async def _cmd_add_alias(self, section: str, kwargs: Dict[str, Any]) -> tuple[bool, str, bool]:
+        stream_id = kwargs.get("stream_id", "")
+        label = SECTION_LABELS[section]
+        if not await self._is_admin(kwargs.get("platform", ""), kwargs.get("user_id", "")):
+            return await self._deny(stream_id)
+
+        args = self._args(kwargs).strip()
+        usage = f"用法: /添加{label}别名 <序号或内容> <别名>"
+        if not args:
+            return await self._send(stream_id, usage)
+
+        selector, alias = parse_selector_and_alias(args)
+        alias = strip_auto_media_text(alias)
+        if not selector or not alias:
+            return await self._send(stream_id, usage)
+
+        data = self.store.data[section]
+        indices = find_indices(data, selector, self.config.reply.case_sensitive)
+        if not indices:
+            return await self._send(stream_id, f"未找到匹配 '{selector}' 的{label}。")
+
+        cfg = data[indices[0]]
+        primary = str(cfg.get("keyword", "") or "").strip()
+        if alias.casefold() == primary.casefold():
+            return await self._send(stream_id, "别名不能与主触发词相同。")
+        if any(a.casefold() == alias.casefold() for a in rule_triggers(cfg)):
+            return await self._send(stream_id, f"别名 '{alias}' 已存在。")
+
+        if cfg.get("regex", False):
+            if not is_safe_regex(alias):
+                return await self._send(stream_id, "正则表达式存在安全风险，请简化后重试。")
+            try:
+                re.compile(alias)
+            except Exception as exc:
+                return await self._send(stream_id, f"无效的正则表达式: {exc}")
+
+        self._merge_aliases(cfg, [alias])
+        await self.store.save()
+        return await self._send(
+            stream_id,
+            f"已为{label} '{primary}' 添加别名 '{alias}'（当前共 {len(cfg.get('aliases') or [])} 个别名）。",
+        )
+
+    async def _cmd_delete_alias(self, section: str, kwargs: Dict[str, Any]) -> tuple[bool, str, bool]:
+        stream_id = kwargs.get("stream_id", "")
+        label = SECTION_LABELS[section]
+        if not await self._is_admin(kwargs.get("platform", ""), kwargs.get("user_id", "")):
+            return await self._deny(stream_id)
+
+        args = self._args(kwargs).strip()
+        usage = f"用法: /删除{label}别名 <序号或内容> <别名或别名序号>"
+        if not args:
+            return await self._send(stream_id, usage)
+
+        selector, target = parse_selector_and_alias(args)
+        target = strip_auto_media_text(target)
+        if not selector or not target:
+            return await self._send(stream_id, usage)
+
+        data = self.store.data[section]
+        indices = find_indices(data, selector, self.config.reply.case_sensitive)
+        if not indices:
+            return await self._send(stream_id, f"未找到匹配 '{selector}' 的{label}。")
+
+        cfg = data[indices[0]]
+        aliases = list(normalize_aliases(cfg.get("aliases")))
+        if not aliases:
+            return await self._send(stream_id, f"该{label}没有别名。")
+
+        removed = ""
+        if target.isdigit():
+            idx = int(target) - 1
+            if not (0 <= idx < len(aliases)):
+                return await self._send(stream_id, f"别名序号无效。请输入 1-{len(aliases)} 之间的数字。")
+            removed = aliases.pop(idx)
+        else:
+            needle = target.casefold()
+            keep = []
+            for alias in aliases:
+                if not removed and alias.casefold() == needle:
+                    removed = alias
+                    continue
+                keep.append(alias)
+            if not removed:
+                return await self._send(stream_id, f"未找到别名 '{target}'。")
+            aliases = keep
+
+        cfg["aliases"] = aliases
+        await self.store.save()
+        return await self._send(
+            stream_id,
+            f"已删除{label} '{cfg.get('keyword')}' 的别名 '{removed}'。",
+        )
     async def _cmd_add_music(self, kwargs: Dict[str, Any]) -> tuple[bool, str, bool]:
         """通过歌曲 ID 直接添加带音乐卡片回复的关键词。"""
 
@@ -949,7 +1037,7 @@ class KeywordsReplyPlugin(MaiBotPlugin):
 
     # ─── 关键词命令（command_triggered） ─────────────────────────
 
-    @Command("kr_add_keyword", description="添加关键词", pattern=r"/添加关键词(?:\s+(?P<args>[\s\S]+))?$")
+    @Command("kr_add_keyword", description="添加关键词", pattern=r"/添加关键词(?!回复|别名)(?:\s+(?P<args>[\s\S]+))?$")
     async def add_keyword(self, **kwargs: Any):
         return await self._cmd_add(SECTION_KEYWORD, kwargs)
 
@@ -957,11 +1045,11 @@ class KeywordsReplyPlugin(MaiBotPlugin):
     async def add_music(self, **kwargs: Any):
         return await self._cmd_add_music(kwargs)
 
-    @Command("kr_edit_keyword", description="编辑关键词", pattern=r"/编辑关键词(?:\s+(?P<args>[\s\S]+))?$")
+    @Command("kr_edit_keyword", description="编辑关键词", pattern=r"/编辑关键词(?!回复)(?:\s+(?P<args>[\s\S]+))?$")
     async def edit_keyword(self, **kwargs: Any):
         return await self._cmd_edit(SECTION_KEYWORD, kwargs)
 
-    @Command("kr_del_keyword", description="删除关键词", pattern=r"/删除关键词(?:\s+(?P<args>[\s\S]+))?$")
+    @Command("kr_del_keyword", description="删除关键词", pattern=r"/删除关键词(?!回复|别名)(?:\s+(?P<args>[\s\S]+))?$")
     async def del_keyword(self, **kwargs: Any):
         return await self._cmd_delete(SECTION_KEYWORD, kwargs)
 
@@ -1005,17 +1093,25 @@ class KeywordsReplyPlugin(MaiBotPlugin):
     async def set_keyword_weight(self, **kwargs: Any):
         return await self._cmd_set_entry_weight(SECTION_KEYWORD, kwargs)
 
+    @Command("kr_add_keyword_alias", description="添加关键词别名", pattern=r"/添加关键词别名(?:\s+(?P<args>[\s\S]+))?$")
+    async def add_keyword_alias(self, **kwargs: Any):
+        return await self._cmd_add_alias(SECTION_KEYWORD, kwargs)
+
+    @Command("kr_del_keyword_alias", description="删除关键词别名", pattern=r"/删除关键词别名(?:\s+(?P<args>[\s\S]+))?$")
+    async def del_keyword_alias(self, **kwargs: Any):
+        return await self._cmd_delete_alias(SECTION_KEYWORD, kwargs)
+
     # ─── 检测词命令（auto_detect） ───────────────────────────────
 
-    @Command("kr_add_detect", description="添加检测词", pattern=r"/添加检测词(?:\s+(?P<args>[\s\S]+))?$")
+    @Command("kr_add_detect", description="添加检测词", pattern=r"/添加检测词(?!回复|别名)(?:\s+(?P<args>[\s\S]+))?$")
     async def add_detect(self, **kwargs: Any):
         return await self._cmd_add(SECTION_DETECT, kwargs)
 
-    @Command("kr_edit_detect", description="编辑检测词", pattern=r"/编辑检测词(?:\s+(?P<args>[\s\S]+))?$")
+    @Command("kr_edit_detect", description="编辑检测词", pattern=r"/编辑检测词(?!回复)(?:\s+(?P<args>[\s\S]+))?$")
     async def edit_detect(self, **kwargs: Any):
         return await self._cmd_edit(SECTION_DETECT, kwargs)
 
-    @Command("kr_del_detect", description="删除检测词", pattern=r"/删除检测词(?:\s+(?P<args>[\s\S]+))?$")
+    @Command("kr_del_detect", description="删除检测词", pattern=r"/删除检测词(?!回复|别名)(?:\s+(?P<args>[\s\S]+))?$")
     async def del_detect(self, **kwargs: Any):
         return await self._cmd_delete(SECTION_DETECT, kwargs)
 
@@ -1058,6 +1154,14 @@ class KeywordsReplyPlugin(MaiBotPlugin):
     @Command("kr_set_detect_weight", description="设置检测词回复权重", pattern=r"/设置检测词权重(?:\s+(?P<args>[\s\S]+))?$")
     async def set_detect_weight(self, **kwargs: Any):
         return await self._cmd_set_entry_weight(SECTION_DETECT, kwargs)
+
+    @Command("kr_add_detect_alias", description="添加检测词别名", pattern=r"/添加检测词别名(?:\s+(?P<args>[\s\S]+))?$")
+    async def add_detect_alias(self, **kwargs: Any):
+        return await self._cmd_add_alias(SECTION_DETECT, kwargs)
+
+    @Command("kr_del_detect_alias", description="删除检测词别名", pattern=r"/删除检测词别名(?:\s+(?P<args>[\s\S]+))?$")
+    async def del_detect_alias(self, **kwargs: Any):
+        return await self._cmd_delete_alias(SECTION_DETECT, kwargs)
 
     @Command("kr_reload_store", description="重载词库", pattern=r"/重载词库$")
     async def reload_store(self, **kwargs: Any):

@@ -293,6 +293,31 @@ tr:hover td { background: rgba(91, 157, 255, 0.06); }
   border-top: 1px solid var(--border);
   padding-top: 12px;
 }
+.alias-section {
+  margin-top: 12px;
+  border-top: 1px solid var(--border);
+  padding-top: 12px;
+}
+.alias-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.alias-row {
+  display: grid;
+  grid-template-columns: 1fr 64px;
+  gap: 8px;
+  align-items: center;
+}
+.alias-row input {
+  margin: 0;
+}
+.alias-empty {
+  color: var(--muted);
+  font-size: 0.85rem;
+  padding: 4px 0;
+}
 .reply-section-head {
   display: flex;
   justify-content: space-between;

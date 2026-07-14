@@ -26,6 +26,8 @@ const state = {
   dirty: false,
   path: "",
   replyRows: [],
+  aliasRows: [],
+  aliasSeq: 0,
   rowSeq: 0,
   page: 1,
   pageSize: PAGE_SIZE_DEFAULT,
@@ -75,14 +77,77 @@ function emptyRule() {
 
 function formatAliases(rule) {
   const aliases = Array.isArray(rule?.aliases) ? rule.aliases.filter(Boolean) : [];
-  return aliases.join(" | ");
+  return aliases.join("、");
 }
 
-function parseAliasesInput(raw) {
-  return String(raw || "")
-    .split(/[|\n,，]+/)
-    .map((s) => s.trim())
-    .filter(Boolean);
+function newAliasId() {
+  state.aliasSeq += 1;
+  return `alias-${state.aliasSeq}`;
+}
+
+function aliasesToRows(aliases) {
+  return (Array.isArray(aliases) ? aliases : [])
+    .map((text) => String(text || "").trim())
+    .filter(Boolean)
+    .map((text) => ({ id: newAliasId(), text }));
+}
+
+function syncAliasRowsFromDom() {
+  const root = $("aliasRows");
+  if (!root) return;
+  for (const row of state.aliasRows) {
+    const input = root.querySelector(`[data-alias-id="${row.id}"] input[data-alias-text]`);
+    if (input) row.text = input.value;
+  }
+}
+
+function collectAliases(keyword = "") {
+  syncAliasRowsFromDom();
+  const primary = String(keyword || "").trim().toLowerCase();
+  const out = [];
+  const seen = new Set();
+  for (const row of state.aliasRows) {
+    const text = String(row.text || "").trim();
+    if (!text) continue;
+    const key = text.toLowerCase();
+    if (primary && key === primary) continue;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(text);
+  }
+  return out;
+}
+
+function renderAliasRows() {
+  const root = $("aliasRows");
+  if (!root) return;
+  if (!state.aliasRows.length) {
+    root.innerHTML = `<div class="alias-empty">暂无别名，点击右上角「添加别名」</div>`;
+    return;
+  }
+  root.innerHTML = state.aliasRows
+    .map(
+      (row) => `
+      <div class="alias-row" data-alias-id="${row.id}">
+        <input data-alias-text placeholder="别名触发词（可含空格）" value="${escapeHtml(row.text || "")}" />
+        <button type="button" class="danger" data-alias-del="${row.id}">删除</button>
+      </div>`
+    )
+    .join("");
+}
+
+function addAliasRow(text = "") {
+  syncAliasRowsFromDom();
+  state.aliasRows.push({ id: newAliasId(), text: String(text || "") });
+  renderAliasRows();
+  const last = $("aliasRows")?.querySelector(".alias-row:last-child input[data-alias-text]");
+  if (last) last.focus();
+}
+
+function removeAliasRow(id) {
+  syncAliasRowsFromDom();
+  state.aliasRows = state.aliasRows.filter((row) => row.id !== id);
+  renderAliasRows();
 }
 
 function newRowId() {
@@ -1328,7 +1393,8 @@ function openRuleModal(index = -1) {
   const rule = isNew ? emptyRule() : structuredClone(getRules()[index]);
 
   $("ruleKeyword").value = rule.keyword || "";
-  $("ruleAliases").value = formatAliases(rule);
+  state.aliasRows = aliasesToRows(rule.aliases || []);
+  renderAliasRows();
   $("ruleEnabled").checked = !!rule.enabled;
   $("ruleRegex").checked = !!rule.regex;
   $("ruleRequireAt").checked = !!rule.require_at_bot;
@@ -1352,7 +1418,8 @@ function openRuleCopyModal(index) {
   $("ruleEditIndex").value = "-1";
   $("ruleModalTitle").textContent = "创建副本（请填写触发词后保存）";
   $("ruleKeyword").value = "";
-  $("ruleAliases").value = "";
+  state.aliasRows = [];
+  renderAliasRows();
   $("ruleEnabled").checked = !!copy.enabled;
   $("ruleRegex").checked = !!copy.regex;
   $("ruleRequireAt").checked = !!copy.require_at_bot;
@@ -1412,9 +1479,7 @@ function saveRuleModal() {
     .map((g) => g.trim())
     .filter(Boolean);
 
-  const aliases = parseAliasesInput($("ruleAliases").value).filter(
-    (alias) => alias.toLowerCase() !== keyword.toLowerCase()
-  );
+  const aliases = collectAliases(keyword);
 
   const rule = {
     keyword,
@@ -1685,6 +1750,14 @@ function bindEvents() {
     syncReplyRowsFromDom();
     state.replyRows.push(createEmptyRow());
     renderReplyRows();
+  });
+
+  $("btnAddAlias").addEventListener("click", () => addAliasRow(""));
+  $("aliasRows").addEventListener("click", (ev) => {
+    const target = ev.target;
+    if (!(target instanceof HTMLElement)) return;
+    const del = target.getAttribute("data-alias-del");
+    if (del !== null) removeAliasRow(del);
   });
 
   $("btnDeleteReplyRows").addEventListener("click", deleteSelectedEntries);
