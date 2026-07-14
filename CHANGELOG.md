@@ -2,7 +2,7 @@
 
 ## 1.1.9
 
-- 修复 ``reply.respond_to_triggers_in_quote = false`` 时仍可能命中引用正文的问题：仅当消息带真实 ``reply`` / ``reply_to`` 时，只匹配用户自己输入的文本段（对齐 NapCat/OneBot ``reply`` + ``text``）；无真实引用时整段正文原样匹配，避免用户故意输入 ``[回复了…]`` 被误剥离。
+- 修复 ``reply.respond_to_triggers_in_quote = false`` 时仍可能命中引用正文的问题
 - 词库编辑器「全选」：未选→全选，已全选→取消，部分选中→反选。
 
 ## 1.1.8

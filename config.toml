@@ -1,6 +1,6 @@
 [plugin]
 enabled = true
-config_version = "1.0.0"
+config_version = "1.1.0"
 
 [permission]
 # 允许管理关键词/检测词的用户 ID 列表（platform:user_id 或 纯 user_id 均可）。
@@ -16,15 +16,14 @@ allow_group_member_list_detects = false
 [reply]
 # 回复时是否引用触发回复的消息。
 quote_reply = false
-# 同一关键词/检测词下有多条回复时，是否以合并转发形式发送全部回复；关闭时随机发送单条。
+# 是否响应回复消息里的触发词
+respond_to_triggers_in_quote = false
+# 同一关键词/检测词下有多条回复时，是否以合并转发形式发送全部回复；关闭时随机发送单条回复。
 qq_forward_all_replies = false
 # 非正则关键词/检测词匹配时是否区分大小写。
 case_sensitive = false
 # 查看列表命令每页显示的词条数量（避免消息过大）。
 list_page_size = 20
-# 触发词仅出现在引用前缀（如 [引用：…] / [回复了…的消息: …]）内时是否响应。
-# 默认 false：剥离引用前缀后再匹配，仅引用内容命中时不回复。
-respond_to_triggers_in_quote = false
 
 [detect]
 # 检测词触发冷却时间（秒），0 表示不冷却。
