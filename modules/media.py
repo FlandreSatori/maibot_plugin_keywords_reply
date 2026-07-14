@@ -97,8 +97,9 @@ def resolve_match_plain_text(
     """按配置得到用于关键词/检测词匹配的正文。
 
     ``respond_to_triggers_in_quote=False`` 时：
-    - 若存在引用，只匹配用户自己输入的文本段；
-    - 否则再剥离 ``processed_plain_text`` 中的引用前缀（兼容嵌套 ``[]``）。
+    - 仅当消息带真实 ``reply`` / ``reply_to`` 时，只匹配用户自己输入的文本段
+      （忽略引用正文；用户若故意把 ``[回复了…]`` 打进正文，仍会按正文匹配）；
+    - 无真实引用时，整段 ``processed_plain_text`` 原样匹配，不做前缀剥离。
     """
 
     message = message if isinstance(message, dict) else {}
@@ -107,7 +108,7 @@ def resolve_match_plain_text(
         return full
     if message_has_reply_context(message):
         return extract_user_typed_plain_text(message)
-    return strip_processed_reply_quote_prefix(full)
+    return full
 
 
 def strip_processed_reply_quote_prefix(text: str) -> str:
