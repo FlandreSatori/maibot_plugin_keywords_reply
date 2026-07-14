@@ -4,7 +4,7 @@
 
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](LICENSE)
 [![MaiBot SDK](https://img.shields.io/badge/MaiBot%20SDK-2.x-green.svg)](https://github.com/MaiM-with-u/MaiBot)
-[![Version](https://img.shields.io/badge/version-1.1.7-orange.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.1.8-orange.svg)](CHANGELOG.md)
 
 ---
 
@@ -28,7 +28,8 @@
 
 | 能力 | 说明 |
 |------|------|
-| 双模式触发 | **关键词**：整条消息首词精确匹配；**检测词**：消息包含即触发 |
+| 双模式触发 | **关键词**：消息以触发词开头（可含空格；优先最长匹配）；**检测词**：消息包含即触发 |
+| 多别名 | 同一词条可配置多个 ``aliases``，无需重复建相同回复 |
 | 富媒体回复 | 文本、图片、**本地视频**、语音、表情、音乐卡片、At；图片/语音/表情支持引用导入 |
 | 有序多段回复 | 单条 entry 内按 `parts` 顺序分多条消息发送 |
 | 多回复抽取 | 先按 `weight` 加权随机，再按 `probability` 判定是否回复 |
@@ -161,6 +162,8 @@ python editor/server.py --data-dir "..." --host 0.0.0.0 --port 8765
 **说明**
 
 - `-r` 表示正则触发词。
+- 触发词可含空格：用英文双引号包裹，例如 `/添加关键词 "hello world" 你好`。
+- 多别名：用 `|` 分隔，例如 `/添加关键词 你好|hello|"hi there" 回复内容`；编辑器也可填「别名」字段。
 - 回复正文可省略，直接**引用一条消息**作为内容。
 - 文本中可用 `[@12345]` 转义保存 At。
 - 音乐平台默认 `163`（网易云），可选 `qq` / `migu` / `kugou` / `kuwo`。
@@ -204,6 +207,7 @@ entry 使用有序 `parts[]` 时，每一段单独发送一条消息，顺序与
 | | `qq_forward_all_replies` | 多回复合并转发 |
 | | `case_sensitive` | 非正则是否区分大小写 |
 | | `list_page_size` | 列表命令每页词条数（默认 40） |
+| | `respond_to_triggers_in_quote` | 触发词仅在引用前缀内时是否响应（默认 `false`） |
 | `[detect]` | `cooldown` | 检测词冷却（秒） |
 | | `ignore_cooldown_on_exact_match` | 完全匹配时无视冷却 |
 | `[template]` | `enable_text_template` | 启用变量模板 |

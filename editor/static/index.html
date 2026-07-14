@@ -113,7 +113,11 @@
         <div class="form-grid">
           <div>
             <label>触发词</label>
-            <input id="ruleKeyword" />
+            <input id="ruleKeyword" placeholder="主触发词（可含空格）" />
+          </div>
+          <div>
+            <label>别名（可选）</label>
+            <input id="ruleAliases" placeholder="用 | 或逗号分隔，例如 hello | hi" />
           </div>
           <div class="checkbox-row">
             <label><input type="checkbox" id="ruleEnabled" checked /> 启用</label>
@@ -132,6 +136,7 @@
             <input id="ruleGroups" placeholder="123456,789012" />
           </div>
         </div>
+        <p class="hint">同一词条可用多个别名触发，无需重复建相同回复。创建副本会复制回复内容，但触发词留空，填写后点确定才会写入。</p>
 
         <div class="reply-section">
           <div class="reply-section-head">

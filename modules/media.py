@@ -48,8 +48,8 @@ _MUSIC_TEXT_PLACEHOLDER_PATTERN = re.compile(
 _MGMT_COMMAND_PATTERN = re.compile(
     r"/(?:添加|编辑|删除|启用|禁用|查看)(?:关键词|检测词)(?:回复)?(?:\s|$)"
 )
-_ADD_COMMAND_PREFIX = re.compile(
-    r"^/(?:添加)(?:关键词|检测词)\s+(?:-r\s+)?\S+(?:\s+(?P<body>[\s\S]+))?$",
+_ADD_COMMAND_HEAD = re.compile(
+    r"^/(?:添加)(?:关键词|检测词)\s+(?:-r\s+)?",
     re.IGNORECASE,
 )
 _ADD_REPLY_COMMAND_PREFIX = re.compile(
@@ -61,7 +61,12 @@ _EDIT_REPLY_COMMAND_PREFIX = re.compile(
     re.IGNORECASE,
 )
 _PROCESSED_REPLY_QUOTE_PREFIX = re.compile(
-    r"^\[(?:回复了.+?的消息:\s*.+\]|回复了一条消息，但原消息已无法访问)\]\s*",
+    r"^\[(?:"
+    r"回复了.+?的消息:\s*[^\]]*|"
+    r"回复了一条消息，但原消息已无法访问|"
+    r"引用[：:][^\]]*|"
+    r"引用消息"
+    r")\]\s*",
     re.DOTALL,
 )
 
@@ -840,13 +845,22 @@ def is_management_command_message(message: Dict[str, Any]) -> bool:
     return bool(text and _MGMT_COMMAND_PATTERN.search(text))
 
 
-def _strip_processed_reply_quote_prefix(text: str) -> str:
-    """剥离 MaiBot 在 ``processed_plain_text`` 中注入的引用说明前缀。"""
+def strip_processed_reply_quote_prefix(text: str) -> str:
+    """剥离 MaiBot 在 ``processed_plain_text`` 中注入的引用说明前缀。
+
+    覆盖常见形态：``[回复了…的消息: …]``、``[引用：…]``、``[引用消息]`` 等。
+    """
 
     normalized = str(text or "").strip()
     if not normalized:
         return ""
     return _PROCESSED_REPLY_QUOTE_PREFIX.sub("", normalized, count=1).strip()
+
+
+def _strip_processed_reply_quote_prefix(text: str) -> str:
+    """兼容旧名。"""
+
+    return strip_processed_reply_quote_prefix(text)
 
 
 def _is_management_command_text(text: str) -> bool:
@@ -866,21 +880,21 @@ def _strip_reply_command_prefix(
 ) -> str:
     """从首段文本中剥离管理命令前缀，保留回复正文。"""
 
+    from .matching import parse_trigger_field_and_body
+
+    del keyword  # 触发词字段可能含空格/别名，统一走解析器
+
     normalized = _strip_processed_reply_quote_prefix(text)
     if not normalized:
         return ""
 
-    if command_mode == "add" and keyword:
-        for pattern in (
-            rf"^/(?:添加)(?:关键词|检测词)\s+-r\s+{re.escape(keyword)}(?:\s+(?P<body>[\s\S]+))?$",
-            rf"^/(?:添加)(?:关键词|检测词)\s+{re.escape(keyword)}(?:\s+(?P<body>[\s\S]+))?$",
-        ):
-            match = re.match(pattern, normalized, re.IGNORECASE)
-            if match:
-                return str(match.group("body") or "").strip()
+    if command_mode == "add":
+        head = _ADD_COMMAND_HEAD.match(normalized)
+        if head:
+            _triggers, body = parse_trigger_field_and_body(normalized[head.end() :])
+            return str(body or "").strip()
 
     prefix_patterns = {
-        "add": (_ADD_COMMAND_PREFIX,),
         "add_reply": (_ADD_REPLY_COMMAND_PREFIX,),
         "edit_reply": (_EDIT_REPLY_COMMAND_PREFIX,),
     }

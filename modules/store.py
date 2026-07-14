@@ -14,6 +14,7 @@
 
     {
       "keyword": "关键词",
+      "aliases": ["别名1", "别名2"],     # 可选；与 keyword 等价触发
       "regex": false,
       "enabled": true,
       "mode": "whitelist" | "blacklist",
@@ -123,6 +124,8 @@ class KeywordsStore:
     def normalize(data: Any) -> Dict[str, List[dict]]:
         """补全缺省字段，保证数据结构完整。"""
 
+        from .matching import normalize_aliases
+
         if not isinstance(data, dict):
             return {"command_triggered": [], "auto_detect": []}
         data.setdefault("command_triggered", [])
@@ -132,10 +135,17 @@ class KeywordsStore:
             if not isinstance(rules, list):
                 data[section] = []
                 continue
+
             for cfg in rules:
                 if not isinstance(cfg, dict):
                     continue
                 cfg.setdefault("keyword", "")
+                primary = str(cfg.get("keyword", "") or "").strip()
+                cfg["keyword"] = primary
+                aliases = normalize_aliases(cfg.get("aliases"))
+                # 别名不得与主词重复
+                primary_key = primary.casefold()
+                cfg["aliases"] = [a for a in aliases if a.casefold() != primary_key]
                 cfg.setdefault("regex", False)
                 cfg.setdefault("enabled", True)
                 cfg.setdefault("mode", "whitelist")

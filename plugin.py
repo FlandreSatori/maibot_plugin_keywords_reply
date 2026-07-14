@@ -24,8 +24,11 @@ from .modules.matching import (
     describe_status,
     find_indices,
     format_list_page_hint,
+    normalize_aliases,
     paginate_slice,
     parse_list_page_arg,
+    parse_trigger_field_and_body,
+    rule_triggers,
     summarize_rule_for_list,
 )
 from .modules.media import (
@@ -41,6 +44,7 @@ from .modules.media import (
     is_management_command_message,
     normalize_music_platform,
     sanitize_entry_text,
+    strip_processed_reply_quote_prefix,
     supported_music_platforms_text,
 )
 from .modules.store import KeywordsStore
@@ -81,6 +85,8 @@ REPLY_HELP_TEXT = """关键词回复插件 · 帮助
 
 【说明】
 · -r 表示正则触发；回复可省略正文并引用一条消息导入
+· 触发词可含空格：用英文双引号包裹，例如 /添加关键词 "hello world" 你好
+· 多别名：用 | 分隔，例如 /添加关键词 你好|hello|"hi there" 回复内容
 · 多条回复：先按权重抽取，再按概率判定是否发送
 · 列表支持分页，例如 /查看关键词列表 2 或 /查看关键词列表 第2页
 · 管理命令需管理员或白名单权限；词库文件可用 editor/ 外部编辑器维护"""
@@ -124,6 +130,10 @@ class ReplyConfig(PluginConfigBase):
     qq_forward_all_replies: bool = Field(default=False, description="多条回复时是否合并转发全部")
     case_sensitive: bool = Field(default=False, description="非正则匹配是否区分大小写")
     list_page_size: int = Field(default=40, description="查看列表命令每页显示的词条数量")
+    respond_to_triggers_in_quote: bool = Field(
+        default=False,
+        description="触发词仅出现在引用前缀（如 [引用：…] / [回复了…的消息: …]）内时是否响应；默认不响应",
+    )
 
 
 class DetectConfig(PluginConfigBase):
@@ -274,15 +284,32 @@ class KeywordsReplyPlugin(MaiBotPlugin):
 
     def _find_rule(self, section: str, keyword: str, is_regex: bool) -> Optional[dict]:
         cs = self.config.reply.case_sensitive
+        needle = keyword if (is_regex or cs) else keyword.casefold()
         for cfg in self.store.data.get(section, []):
-            kw = cfg.get("keyword", "")
-            if cfg.get("regex", False) or cs:
-                equal = kw == keyword
-            else:
-                equal = kw.lower() == keyword.lower()
-            if equal:
-                return cfg
+            for trigger in rule_triggers(cfg):
+                if cfg.get("regex", False) or cs:
+                    equal = trigger == keyword
+                else:
+                    equal = trigger.casefold() == needle
+                if equal:
+                    return cfg
         return None
+
+    @staticmethod
+    def _merge_aliases(rule: dict, aliases: List[str]) -> None:
+        """把新别名合并进规则（排除与主词重复）。"""
+
+        primary = str(rule.get("keyword", "") or "").strip()
+        primary_key = primary.casefold()
+        existing = normalize_aliases(rule.get("aliases"))
+        seen = {a.casefold() for a in existing}
+        for alias in normalize_aliases(aliases):
+            key = alias.casefold()
+            if key == primary_key or key in seen:
+                continue
+            existing.append(alias)
+            seen.add(key)
+        rule["aliases"] = existing
 
     @staticmethod
     def _extract_group_id(message: Dict[str, Any]) -> str:
@@ -413,35 +440,39 @@ class KeywordsReplyPlugin(MaiBotPlugin):
         if not args:
             return await self._send(stream_id, usage)
 
-        m = re.search(r"\s", args)
-        if m:
-            keyword = args[: m.start()]
-            reply_text = args[m.start():].lstrip()
-        else:
-            keyword = args
-            reply_text = ""
-        keyword = strip_auto_media_text(keyword)
+        triggers, reply_text = parse_trigger_field_and_body(args)
+        triggers = [strip_auto_media_text(t) for t in triggers if strip_auto_media_text(t)]
         reply_text = strip_auto_media_text(reply_text)
-        if not keyword:
+        if not triggers:
             return await self._send(stream_id, f"{label}不能为空。")
 
+        keyword = triggers[0]
+        aliases = triggers[1:]
+
         if is_regex:
-            if not is_safe_regex(keyword):
-                return await self._send(stream_id, "正则表达式存在安全风险，请简化后重试。")
-            try:
-                re.compile(keyword)
-            except Exception as exc:
-                return await self._send(stream_id, f"无效的正则表达式: {exc}")
+            for trigger in triggers:
+                if not is_safe_regex(trigger):
+                    return await self._send(stream_id, "正则表达式存在安全风险，请简化后重试。")
+                try:
+                    re.compile(trigger)
+                except Exception as exc:
+                    return await self._send(stream_id, f"无效的正则表达式: {exc}")
 
         entry = await self._build_entry(reply_text, message, command_mode="add", keyword=keyword)
         if not self.store.entry_has_payload(entry):
             return await self._send(stream_id, "回复内容不能为空。")
 
-        rule = self._find_rule(section, keyword, is_regex)
+        rule = None
+        for trigger in triggers:
+            rule = self._find_rule(section, trigger, is_regex)
+            if rule is not None:
+                break
         if rule is not None:
             rule["entries"].append(entry)
             rule["regex"] = is_regex
+            self._merge_aliases(rule, aliases)
             status = f"已为现有{label}添加新回复（当前共有 {len(rule['entries'])} 个回复）。"
+            display = rule.get("keyword", keyword)
         else:
             if group_id:
                 enabled, mode, groups = True, "whitelist", [group_id]
@@ -451,6 +482,7 @@ class KeywordsReplyPlugin(MaiBotPlugin):
                 status = f"已成功添加{label}。由于非群聊环境创建，已默认全局禁用。"
             rule = {
                 "keyword": keyword,
+                "aliases": normalize_aliases(aliases),
                 "entries": [entry],
                 "regex": is_regex,
                 "enabled": enabled,
@@ -460,9 +492,11 @@ class KeywordsReplyPlugin(MaiBotPlugin):
             if section == SECTION_DETECT:
                 rule["case_sensitive"] = self.config.reply.case_sensitive
             self.store.data[section].append(rule)
+            display = keyword
 
         await self.store.save()
-        return await self._send(stream_id, f"成功操作{label}: {keyword}\n{status}")
+        alias_hint = f"（别名: {' | '.join(rule.get('aliases') or [])}）" if rule.get("aliases") else ""
+        return await self._send(stream_id, f"成功操作{label}: {display}{alias_hint}\n{status}")
 
     async def _cmd_add_music(self, kwargs: Dict[str, Any]) -> tuple[bool, str, bool]:
         """通过歌曲 ID 直接添加带音乐卡片回复的关键词。"""
@@ -511,6 +545,7 @@ class KeywordsReplyPlugin(MaiBotPlugin):
             self.store.data[SECTION_KEYWORD].append(
                 {
                     "keyword": keyword,
+                    "aliases": [],
                     "entries": [entry],
                     "regex": False,
                     "enabled": enabled,
@@ -670,8 +705,11 @@ class KeywordsReplyPlugin(MaiBotPlugin):
 
         cfg = data[indices[0]]
         entries = cfg.get("entries", [])
+        aliases = normalize_aliases(cfg.get("aliases"))
+        alias_line = f"别名: {' | '.join(aliases)}\n" if aliases else ""
         header = (
             f"{label}: {cfg['keyword']}\n"
+            f"{alias_line}"
             f"类型: {'正则匹配' if cfg.get('regex') else MATCH_TYPE_LABELS[section]}\n"
             f"状态: {describe_status(cfg)}\n"
         )
@@ -1090,6 +1128,13 @@ class KeywordsReplyPlugin(MaiBotPlugin):
         if message.get("is_command") or any(text.startswith(p) for p in self._MGMT_PREFIXES):
             return "none"
 
+        # 默认忽略引用前缀内的触发词，只匹配用户实际发送的正文。
+        match_text = text
+        if not self.config.reply.respond_to_triggers_in_quote:
+            match_text = strip_processed_reply_quote_prefix(text)
+            if not match_text:
+                return "none"
+
         info = message.get("message_info", {}) if isinstance(message.get("message_info"), dict) else {}
         group_info = info.get("group_info") or {}
         group_id = str(group_info.get("group_id", "") or "") if isinstance(group_info, dict) else ""
@@ -1101,7 +1146,7 @@ class KeywordsReplyPlugin(MaiBotPlugin):
 
         try:
             command_match = self.matcher.match_command(
-                text,
+                match_text,
                 group_id,
                 is_at=is_at,
                 is_mentioned=is_mentioned,
@@ -1111,7 +1156,7 @@ class KeywordsReplyPlugin(MaiBotPlugin):
                 return "keyword"
 
             detect_match = self.matcher.match_detect(
-                text,
+                match_text,
                 group_id,
                 session_id,
                 is_at=is_at,

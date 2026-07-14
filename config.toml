@@ -22,6 +22,9 @@ qq_forward_all_replies = false
 case_sensitive = false
 # 查看列表命令每页显示的词条数量（避免消息过大）。
 list_page_size = 20
+# 触发词仅出现在引用前缀（如 [引用：…] / [回复了…的消息: …]）内时是否响应。
+# 默认 false：剥离引用前缀后再匹配，仅引用内容命中时不回复。
+respond_to_triggers_in_quote = false
 
 [detect]
 # 检测词触发冷却时间（秒），0 表示不冷却。

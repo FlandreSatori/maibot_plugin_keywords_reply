@@ -1,9 +1,8 @@
 """关键词/检测词匹配引擎。
 
-- 命令触发（command_triggered）：整条消息首个 token 与关键词精确匹配（或正则 fullmatch）。
-- 自动监听（auto_detect）：消息文本包含检测词（或正则 search）。
-
-两种模式均支持：群聊黑白名单、大小写敏感、（检测词）触发冷却。
+- ``command_triggered``：消息以触发词开头（触发词可含空格；其后可有参数）。
+- ``auto_detect``：消息中包含触发词。
+- 每条规则支持 ``keyword`` + ``aliases[]`` 多别名。
 """
 
 from __future__ import annotations
@@ -14,109 +13,253 @@ import re
 import time
 from typing import Any, Callable, Dict, List, Optional
 
-from .store import KeywordsStore
-
 logger = logging.getLogger("plugin.maibot_plugin.keywords_reply")
 
 
+def rule_triggers(cfg: dict) -> List[str]:
+    """返回规则的全部触发词（主词 + 别名），去重且保持顺序。"""
+
+    primary = str(cfg.get("keyword", "") or "").strip()
+    raw_aliases = cfg.get("aliases") or []
+    if isinstance(raw_aliases, str):
+        alias_items = [raw_aliases]
+    elif isinstance(raw_aliases, list):
+        alias_items = raw_aliases
+    else:
+        alias_items = []
+
+    out: List[str] = []
+    seen: set[str] = set()
+    for item in [primary, *alias_items]:
+        text = str(item or "").strip()
+        if not text:
+            continue
+        key = text.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(text)
+    return out
+
+
+def normalize_aliases(value: Any) -> List[str]:
+    """把别名字段规范为去重字符串列表。"""
+
+    if isinstance(value, str):
+        parts = re.split(r"[|\n,，]+", value)
+    elif isinstance(value, list):
+        parts = value
+    else:
+        parts = []
+    out: List[str] = []
+    seen: set[str] = set()
+    for item in parts:
+        text = str(item or "").strip()
+        if not text:
+            continue
+        key = text.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(text)
+    return out
+
+
+def parse_trigger_field_and_body(args: str) -> tuple[List[str], str]:
+    """解析添加命令参数中的触发词字段与回复正文。
+
+    支持 ``词 回复``、``\"含 空格\" 回复``、``别名1|别名2|\"含 空格\" 回复``。
+    """
+
+    s = str(args or "")
+    n = len(s)
+    i = 0
+    while i < n and s[i].isspace():
+        i += 1
+    if i >= n:
+        return [], ""
+
+    triggers: List[str] = []
+    while i < n:
+        if s[i] in "\"'":
+            quote = s[i]
+            i += 1
+            start = i
+            while i < n and s[i] != quote:
+                i += 1
+            triggers.append(s[start:i])
+            if i < n and s[i] == quote:
+                i += 1
+        else:
+            start = i
+            while i < n and (not s[i].isspace()) and s[i] != "|":
+                i += 1
+            triggers.append(s[start:i])
+
+        while i < n and s[i].isspace():
+            i += 1
+        if i < n and s[i] == "|":
+            i += 1
+            while i < n and s[i].isspace():
+                i += 1
+            continue
+        break
+
+    triggers = [t.strip() for t in triggers if t.strip()]
+    body = s[i:].strip()
+    return triggers, body
+
+
+def trigger_matches_command(
+    text: str,
+    trigger: str,
+    *,
+    case_sensitive: bool,
+    is_regex: bool,
+    compiled: Optional[re.Pattern[str]] = None,
+) -> bool:
+    """判断消息是否由该触发词作为命令词命中（允许后续参数）。"""
+
+    text = str(text or "")
+    trigger = str(trigger or "")
+    if not text or not trigger:
+        return False
+
+    if is_regex:
+        pattern = compiled
+        if pattern is None:
+            return False
+        match = pattern.match(text)
+        if match is None:
+            return False
+        end = match.end()
+        return end == len(text) or text[end : end + 1].isspace()
+
+    left = text if case_sensitive else text.casefold()
+    right = trigger if case_sensitive else trigger.casefold()
+    if left == right:
+        return True
+    return left.startswith(right + " ")
+
+
+def trigger_matches_detect(
+    text: str,
+    trigger: str,
+    *,
+    case_sensitive: bool,
+    is_regex: bool,
+    compiled: Optional[re.Pattern[str]] = None,
+) -> tuple[bool, bool]:
+    """判断检测词是否命中，返回 (是否命中, 是否整句精确匹配)。"""
+
+    text = str(text or "")
+    trigger = str(trigger or "")
+    if not text or not trigger:
+        return False, False
+
+    if is_regex:
+        pattern = compiled
+        if pattern is None:
+            return False, False
+        return bool(pattern.search(text)), False
+
+    if case_sensitive:
+        hay, needle = text, trigger
+        exact = text == trigger
+    else:
+        hay, needle = text.casefold(), trigger.casefold()
+        exact = text.casefold() == trigger.casefold()
+    if needle not in hay:
+        return False, False
+    return True, exact
+
+
 def pick_weighted_entry(entries: List[dict]) -> Optional[dict]:
-    """按 entry.weight 权重随机抽取一条回复。"""
+    """按 weight 加权随机抽取一条 entry。"""
 
     if not entries:
         return None
-    if len(entries) == 1:
-        return entries[0]
-
-    weights = [KeywordsStore.normalize_entry_weight(entry) for entry in entries]
-    total = sum(weights)
-    if total <= 0:
+    weights = []
+    for entry in entries:
+        try:
+            w = int(entry.get("weight", 100) or 100)
+        except (TypeError, ValueError):
+            w = 100
+        weights.append(max(0, w))
+    if sum(weights) <= 0:
         return random.choice(entries)
     return random.choices(entries, weights=weights, k=1)[0]
 
 
 def entry_passes_probability(entry: dict) -> bool:
-    """判定抽中的 entry 是否通过概率检查。"""
+    """按 probability（0-100）判定是否实际发送。"""
 
-    probability = KeywordsStore.normalize_entry_probability(entry)
-    if probability >= 100:
+    try:
+        p = int(entry.get("probability", 100) or 100)
+    except (TypeError, ValueError):
+        p = 100
+    p = max(0, min(100, p))
+    if p >= 100:
         return True
-    if probability <= 0:
+    if p <= 0:
         return False
-    return random.randint(1, 100) <= probability
+    return random.randint(1, 100) <= p
 
 
 def pick_entry_for_reply(entries: List[dict]) -> Optional[dict]:
-    """先按权重抽取一条回复，再按该条 probability 决定是否回复。"""
+    """加权抽取后再过概率门。"""
 
     picked = pick_weighted_entry(entries)
-    if not picked:
+    if picked is None:
         return None
     if not entry_passes_probability(picked):
-        logger.debug("已按权重选中回复，但未通过概率判定，跳过发送")
         return None
     return picked
 
 
 def message_has_bot_mention(is_at: bool, is_mentioned: bool) -> bool:
-    """判断消息是否包含对机器人的 @ 或平台级提及。"""
-
     return bool(is_at or is_mentioned)
 
 
 class Matcher:
-    """封装匹配所需的缓存与冷却状态。"""
+    """关键词 / 检测词匹配器。"""
 
-    def __init__(self, store: KeywordsStore, get_settings: Callable[[], Dict[str, Any]]) -> None:
+    def __init__(self, store: Any, get_settings: Callable[[], Dict[str, Any]]) -> None:
         self.store = store
         self.get_settings = get_settings
-        self._regex_cache: Dict[tuple, Optional[re.Pattern]] = {}
-        self._regex_cache_version = -1
         self._last_triggered: Dict[str, float] = {}
+        self._regex_cache: Dict[str, Optional[re.Pattern[str]]] = {}
 
-    def _compiled(self, pattern: str) -> Optional[re.Pattern]:
-        if self._regex_cache_version != self.store.data_version:
-            self._regex_cache.clear()
-            self._regex_cache_version = self.store.data_version
-        cached = self._regex_cache.get(pattern)
-        if cached is not None:
-            return cached
+    def _compiled(self, pattern: str) -> Optional[re.Pattern[str]]:
+        if pattern in self._regex_cache:
+            return self._regex_cache[pattern]
         try:
-            compiled = re.compile(pattern)
-            self._regex_cache[pattern] = compiled
-            return compiled
-        except Exception as exc:
-            logger.error(f"正则编译失败({pattern}): {exc}")
-            self._regex_cache[pattern] = None
-            return None
+            compiled: Optional[re.Pattern[str]] = re.compile(pattern)
+        except re.error:
+            compiled = None
+        self._regex_cache[pattern] = compiled
+        return compiled
 
-    @staticmethod
-    def is_enabled_in_group(cfg: dict, group_id: str) -> bool:
+    def is_enabled_in_group(self, cfg: dict, group_id: str) -> bool:
+        return self._group_allows(cfg, group_id)
+
+    def _group_allows(self, cfg: dict, group_id: str) -> bool:
         if not cfg.get("enabled", True):
             return False
         mode = cfg.get("mode", "whitelist")
-        groups = cfg.get("groups", [])
-        if mode == "whitelist":
+        groups = [str(g) for g in (cfg.get("groups") or [])]
+        if mode == "blacklist":
+            return group_id not in groups
+        if groups:
             return group_id in groups
-        return group_id not in groups
-
-    def _group_allows(self, cfg: dict, group_id: str) -> bool:
-        mode = cfg.get("mode", "whitelist")
-        groups = cfg.get("groups", [])
-        if mode == "whitelist":
-            return group_id in groups
-        return group_id not in groups
-
-    def _should_forward(self, entries: List[dict], group_id: str) -> bool:
-        settings = self.get_settings()
-        if not settings.get("qq_forward_all_replies", False):
-            return False
-        if len(entries or []) <= 1:
-            return False
         if not group_id:
             return False
         return True
 
-    # ─── 命令触发 ──────────────────────────────────────────────
+    def _should_forward(self, entries: List[dict], group_id: str) -> bool:
+        del group_id
+        settings = self.get_settings()
+        return bool(settings.get("qq_forward_all_replies")) and len(entries) > 1
 
     def match_command(
         self,
@@ -129,39 +272,44 @@ class Matcher:
         text = (text or "").strip()
         if not text or not group_id:
             return None
-        potential = text.split()[0]
         settings = self.get_settings()
         case_sensitive = bool(settings.get("case_sensitive", False))
 
+        candidates: List[tuple[int, dict, str]] = []
         for cfg in self.store.data.get("command_triggered", []):
-            keyword = cfg.get("keyword")
-            if not keyword or not cfg.get("enabled", True):
+            if not cfg.get("enabled", True):
                 continue
             if cfg.get("require_at_bot") and not message_has_bot_mention(is_at, is_mentioned):
                 continue
-            if cfg.get("regex", False):
-                compiled = self._compiled(keyword)
-                if compiled is None or not compiled.fullmatch(potential):
-                    continue
-            else:
-                left, right = (potential, keyword) if case_sensitive else (potential.lower(), keyword.lower())
-                if left != right:
-                    continue
             if not self._group_allows(cfg, group_id):
                 continue
-            entries = cfg.get("entries") or []
-            if not entries:
-                return None
-            logger.info(f"关键词触发: {potential} (群: {group_id})")
-            if self._should_forward(entries, group_id):
-                return {"payload": list(entries), "rule": cfg}
-            picked = pick_entry_for_reply(entries)
-            if not picked:
-                return None
-            return {"payload": picked, "rule": cfg}
-        return None
+            is_regex = bool(cfg.get("regex", False))
+            for trigger in rule_triggers(cfg):
+                compiled = self._compiled(trigger) if is_regex else None
+                if not trigger_matches_command(
+                    text,
+                    trigger,
+                    case_sensitive=case_sensitive,
+                    is_regex=is_regex,
+                    compiled=compiled,
+                ):
+                    continue
+                candidates.append((len(trigger), cfg, trigger))
 
-    # ─── 自动监听 ──────────────────────────────────────────────
+        if not candidates:
+            return None
+        candidates.sort(key=lambda item: (-item[0],))
+        _, cfg, hit = candidates[0]
+        entries = cfg.get("entries") or []
+        if not entries:
+            return None
+        logger.info(f"关键词触发: {hit} (群: {group_id})")
+        if self._should_forward(entries, group_id):
+            return {"payload": list(entries), "rule": cfg, "trigger": hit}
+        picked = pick_entry_for_reply(entries)
+        if not picked:
+            return None
+        return {"payload": picked, "rule": cfg, "trigger": hit}
 
     def match_detect(
         self,
@@ -182,27 +330,28 @@ class Matcher:
         now = time.time()
 
         for cfg in self.store.data.get("auto_detect", []):
-            keyword = cfg.get("keyword")
-            if not keyword or not cfg.get("enabled", True):
+            if not cfg.get("enabled", True):
                 continue
             if cfg.get("require_at_bot") and not message_has_bot_mention(is_at, is_mentioned):
                 continue
-            is_regex = cfg.get("regex", False)
-
-            if is_regex:
-                compiled = self._compiled(keyword)
-                if compiled is None or not compiled.search(text):
-                    continue
-                is_exact = False
-            else:
-                if global_case_sensitive:
-                    hay, needle = text, keyword
-                    is_exact = text == keyword
-                else:
-                    hay, needle = text.lower(), keyword.lower()
-                    is_exact = text.lower() == keyword.lower()
-                if needle not in hay:
-                    continue
+            is_regex = bool(cfg.get("regex", False))
+            hit = ""
+            is_exact = False
+            for trigger in rule_triggers(cfg):
+                compiled = self._compiled(trigger) if is_regex else None
+                matched, exact = trigger_matches_detect(
+                    text,
+                    trigger,
+                    case_sensitive=global_case_sensitive,
+                    is_regex=is_regex,
+                    compiled=compiled,
+                )
+                if matched:
+                    hit = trigger
+                    is_exact = exact
+                    break
+            if not hit:
+                continue
 
             if not self._group_allows(cfg, group_id):
                 continue
@@ -221,13 +370,13 @@ class Matcher:
             if cooldown > 0 and not skip_cooldown:
                 self._last_triggered[session_id] = now
 
-            logger.info(f"检测词触发: {keyword} (群: {group_id})")
+            logger.info(f"检测词触发: {hit} (群: {group_id})")
             if self._should_forward(entries, group_id):
-                return {"payload": list(entries), "rule": cfg}
+                return {"payload": list(entries), "rule": cfg, "trigger": hit}
             picked = pick_entry_for_reply(entries)
             if not picked:
                 return None
-            return {"payload": picked, "rule": cfg}
+            return {"payload": picked, "rule": cfg, "trigger": hit}
         return None
 
 
@@ -235,7 +384,7 @@ class Matcher:
 
 
 def find_indices(data: List[dict], param: str, case_sensitive: bool = False) -> List[int]:
-    """支持 ``1,2-5`` 形式的序号，或按关键词内容匹配，返回索引列表。"""
+    """支持 ``1,2-5`` 形式的序号，或按关键词/别名内容匹配，返回索引列表。"""
 
     if not data:
         return []
@@ -254,16 +403,18 @@ def find_indices(data: List[dict], param: str, case_sensitive: bool = False) -> 
         pass
 
     matched: List[int] = []
+    needle = param if case_sensitive else param.casefold()
     for i, cfg in enumerate(data):
-        keyword = cfg.get("keyword", "")
-        is_regex = cfg.get("regex", False)
-        if is_regex or case_sensitive:
-            equal = keyword == param
-        else:
-            equal = keyword.lower() == param.lower()
-        if equal:
-            matched.append(i)
+        for trigger in rule_triggers(cfg):
+            if cfg.get("regex", False) or case_sensitive:
+                equal = trigger == param
+            else:
+                equal = trigger.casefold() == needle
+            if equal:
+                matched.append(i)
+                break
     return matched
+
 
 
 def apply_group_toggle(cfg: dict, enable: bool, args: List[str], current_group_id: str) -> tuple[bool, str]:
@@ -401,5 +552,9 @@ def summarize_rule_for_list(cfg: dict, index: int) -> str:
     regex_str = " [正则]" if cfg.get("regex", False) else ""
     entry_count = len(cfg.get("entries") or [])
     reply_hint = f" · {entry_count}条回复" if entry_count != 1 else ""
-    keyword = str(cfg.get("keyword", "") or "")
-    return f"【{index}】 {keyword}{regex_str}{describe_status_brief(cfg)}{reply_hint}"
+    triggers = rule_triggers(cfg)
+    keyword = triggers[0] if triggers else str(cfg.get("keyword", "") or "")
+    alias_hint = ""
+    if len(triggers) > 1:
+        alias_hint = f" (+{len(triggers) - 1}别名)"
+    return f"【{index}】 {keyword}{alias_hint}{regex_str}{describe_status_brief(cfg)}{reply_hint}"

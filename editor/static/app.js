@@ -63,6 +63,7 @@ function emptyEntry() {
 function emptyRule() {
   return {
     keyword: "",
+    aliases: [],
     regex: false,
     enabled: true,
     mode: "whitelist",
@@ -70,6 +71,18 @@ function emptyRule() {
     require_at_bot: false,
     entries: [],
   };
+}
+
+function formatAliases(rule) {
+  const aliases = Array.isArray(rule?.aliases) ? rule.aliases.filter(Boolean) : [];
+  return aliases.join(" | ");
+}
+
+function parseAliasesInput(raw) {
+  return String(raw || "")
+    .split(/[|\n,，]+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
 }
 
 function newRowId() {
@@ -652,10 +665,12 @@ function summarizeEntry(entry) {
 
 function buildSearchHay(rule) {
   const keyword = (rule.keyword || "").toLowerCase();
+  const aliases = formatAliases(rule).toLowerCase();
   const entries = rule.entries || [];
-  if (!entries.length) return keyword;
+  const head = [keyword, aliases].filter(Boolean).join(" ");
+  if (!entries.length) return head;
   const previews = entries.slice(0, 2).map((entry) => summarizeEntry(entry)).join(" ").toLowerCase();
-  return `${keyword} ${previews}`;
+  return `${head} ${previews}`;
 }
 
 function rebuildSearchHay() {
@@ -1275,7 +1290,11 @@ function render() {
     const checked = state.selected.has(index) ? "checked" : "";
     tr.innerHTML = `
       <td><input type="checkbox" data-select="${index}" ${checked} /></td>
-      <td><strong>${escapeHtml(rule.keyword || "")}</strong>${rule.regex ? '<span class="badge">正则</span>' : ""}</td>
+      <td><strong>${escapeHtml(rule.keyword || "")}</strong>${
+        formatAliases(rule)
+          ? `<div class="entry-preview">别名: ${escapeHtml(formatAliases(rule))}</div>`
+          : ""
+      }${rule.regex ? '<span class="badge">正则</span>' : ""}</td>
       <td>
         <span class="badge ${rule.enabled ? "on" : "off"}">${rule.enabled ? "启用" : "禁用"}</span>
         ${rule.require_at_bot ? '<span class="badge on">需@</span>' : ""}
@@ -1284,6 +1303,7 @@ function render() {
       <td>${summarizeEntriesForList(rule)}</td>
       <td>
         <button class="secondary" data-edit="${index}">编辑</button>
+        <button class="secondary" data-copy="${index}">创建副本</button>
         <button class="danger" data-del="${index}">删除</button>
       </td>`;
     frag.appendChild(tr);
@@ -1308,6 +1328,7 @@ function openRuleModal(index = -1) {
   const rule = isNew ? emptyRule() : structuredClone(getRules()[index]);
 
   $("ruleKeyword").value = rule.keyword || "";
+  $("ruleAliases").value = formatAliases(rule);
   $("ruleEnabled").checked = !!rule.enabled;
   $("ruleRegex").checked = !!rule.regex;
   $("ruleRequireAt").checked = !!rule.require_at_bot;
@@ -1320,6 +1341,30 @@ function openRuleModal(index = -1) {
   if ($("entryFilterReplyType")) $("entryFilterReplyType").value = "all";
   renderReplyRows();
   $("ruleModal").classList.add("open");
+}
+
+function openRuleCopyModal(index) {
+  const source = getRules()[index];
+  if (!source) return;
+  const copy = structuredClone(source);
+  copy.keyword = "";
+  copy.aliases = [];
+  $("ruleEditIndex").value = "-1";
+  $("ruleModalTitle").textContent = "创建副本（请填写触发词后保存）";
+  $("ruleKeyword").value = "";
+  $("ruleAliases").value = "";
+  $("ruleEnabled").checked = !!copy.enabled;
+  $("ruleRegex").checked = !!copy.regex;
+  $("ruleRequireAt").checked = !!copy.require_at_bot;
+  $("ruleMode").value = copy.mode || "whitelist";
+  $("ruleGroups").value = (copy.groups || []).join(",");
+  state.replyRows = entriesToRows(copy.entries || []);
+  state.replyPage = 1;
+  state.selectedEntries.clear();
+  if ($("entryFilterReplyType")) $("entryFilterReplyType").value = "all";
+  renderReplyRows();
+  $("ruleModal").classList.add("open");
+  $("ruleKeyword").focus();
 }
 
 function closeRuleModal() {
@@ -1367,8 +1412,13 @@ function saveRuleModal() {
     .map((g) => g.trim())
     .filter(Boolean);
 
+  const aliases = parseAliasesInput($("ruleAliases").value).filter(
+    (alias) => alias.toLowerCase() !== keyword.toLowerCase()
+  );
+
   const rule = {
     keyword,
+    aliases,
     enabled: $("ruleEnabled").checked,
     regex: $("ruleRegex").checked,
     require_at_bot: $("ruleRequireAt").checked,
@@ -1773,8 +1823,10 @@ function bindEvents() {
     if (!(target instanceof HTMLElement)) return;
     const edit = target.getAttribute("data-edit");
     const del = target.getAttribute("data-del");
+    const copy = target.getAttribute("data-copy");
     const select = target.getAttribute("data-select");
     if (edit !== null) return openRuleModal(parseInt(edit, 10));
+    if (copy !== null) return openRuleCopyModal(parseInt(copy, 10));
     if (del !== null) {
       const index = parseInt(del, 10);
       if (!confirm("确定删除该词条？此操作不可撤销。")) return;
