@@ -3,6 +3,8 @@
 ## 1.1.10
 
 - 词库编辑器新增「合并重复词条」：回复与群策略相同的词条合并为主触发词 + 别名；写入前自动备份 ``keywords.json.bak_merge_*``。
+- 合并转发消息（``raw_message`` 含 ``forward`` / 正文 ``【合并转发消息:…】``）整条不参与关键词与检测词匹配，避免 QQ 名误触发。
+- 自动回复命中时输出 DEBUG 诊断日志（``processed_plain_text``、``raw_seg_types``、精简 ``raw_message``）。
 
 ## 1.1.9
 
