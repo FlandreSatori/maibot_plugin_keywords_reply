@@ -4,7 +4,7 @@
 
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](LICENSE)
 [![MaiBot SDK](https://img.shields.io/badge/MaiBot%20SDK-2.x-green.svg)](https://github.com/MaiM-with-u/MaiBot)
-[![Version](https://img.shields.io/badge/version-1.1.9-orange.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.1.10-orange.svg)](CHANGELOG.md)
 
 ---
 

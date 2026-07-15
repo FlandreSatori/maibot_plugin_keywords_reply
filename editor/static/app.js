@@ -1619,6 +1619,62 @@ async function saveData() {
   );
 }
 
+function summarizeMergeReport(report) {
+  if (!report || typeof report !== "object") return "";
+  const parts = [];
+  for (const [section, stats] of Object.entries(report)) {
+    const label = section === "command_triggered" ? "关键词" : "检测词";
+    parts.push(
+      `${label} ${stats.before}→${stats.after}（合并组 ${stats.groups_merged}，去掉 ${stats.rules_removed}）`
+    );
+  }
+  return parts.join("；");
+}
+
+async function mergeDuplicateRules() {
+  if (state.dirty && !confirm("有未保存修改。合并会直接改磁盘上的 keywords.json 并重新加载，未保存改动将丢失。继续？")) {
+    return;
+  }
+  if (
+    !confirm(
+      "将把「回复内容 + 群策略等行为相同」的词条合并：保留一条主触发词，其余写入别名。\n会先自动备份 keywords.json.bak_merge_* 。\n确定继续？"
+    )
+  ) {
+    return;
+  }
+
+  return runWithProgressToast(
+    "合并重复词条",
+    async (report) => {
+      report(18, "备份并合并…");
+      const res = await fetch("/api/merge-duplicates", { method: "POST" });
+      report(70, "读取合并结果…");
+      const payload = await res.json();
+      if (!payload.ok) throw new Error(payload.error || "合并失败");
+      report(88, "刷新列表…");
+      state.data = payload.data;
+      state.path = payload.path || state.path;
+      state.selected.clear();
+      state.dirty = false;
+      state.page = 1;
+      rebuildSearchHay();
+      if (payload.path) $("pathMeta").textContent = `数据文件: ${payload.path}`;
+      refreshList();
+      return payload;
+    },
+    {
+      successMessage: (payload) => {
+        const detail = summarizeMergeReport(payload.report);
+        const text = detail
+          ? `合并完成 · ${detail} · 备份 ${payload.backup || ""}`
+          : `合并完成 · 关键词 ${payload.keyword_count} · 检测词 ${payload.detect_count}`;
+        setStatus(text);
+        return text;
+      },
+    },
+  );
+}
+
 function batchUpdate(mutator) {
   if (!state.selected.size) {
     alert("请先勾选词条");
@@ -1754,6 +1810,9 @@ function bindEvents() {
     loadData({ toastTitle: "重新加载" }).catch((err) => setStatus(err.message, true));
   });
   $("btnSave").addEventListener("click", () => saveData().catch((err) => setStatus(err.message, true)));
+  $("btnMergeDupes").addEventListener("click", () =>
+    mergeDuplicateRules().catch((err) => setStatus(err.message, true))
+  );
   $("btnAddRule").addEventListener("click", () => openRuleModal(-1));
   $("btnRuleCancel").addEventListener("click", closeRuleModal);
   $("btnRuleClose").addEventListener("click", closeRuleModal);

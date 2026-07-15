@@ -29,6 +29,7 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from modules.merge_rules import merge_keywords_file  # noqa: E402
 from modules.store import KeywordsStore  # noqa: E402
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
@@ -85,6 +86,24 @@ class EditorHandler(SimpleHTTPRequestHandler):
             )
             return
         return super().do_GET()
+
+    def do_POST(self) -> None:
+        path = urlparse(self.path).path
+        if path != "/api/merge-duplicates":
+            self._send_json(HTTPStatus.NOT_FOUND, {"ok": False, "error": "not found"})
+            return
+        try:
+            data_file = self.data_dir / "keywords.json"
+            result = merge_keywords_file(data_file)
+            # 经 store 规范化后再回读，保证 aliases 等字段完整
+            store = KeywordsStore(self.data_dir)
+            store.setup()
+            result["data"] = store.data
+            result["keyword_count"] = len(store.data.get("command_triggered", []))
+            result["detect_count"] = len(store.data.get("auto_detect", []))
+            self._send_json(HTTPStatus.OK, result)
+        except Exception as exc:
+            self._send_json(HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(exc)})
 
     def do_PUT(self) -> None:
         path = urlparse(self.path).path
