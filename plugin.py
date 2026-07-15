@@ -222,6 +222,105 @@ class KeywordsReplyPlugin(MaiBotPlugin):
             "ignore_cooldown_on_exact_match": self.config.detect.ignore_cooldown_on_exact_match,
         }
 
+    @staticmethod
+    def _truncate_debug_text(value: Any, limit: int = 500) -> str:
+        text = str(value or "")
+        if len(text) <= limit:
+            return text
+        return f"{text[:limit]}…(len={len(text)})"
+
+    @classmethod
+    def _debug_raw_message(cls, message: Dict[str, Any]) -> List[dict]:
+        """为 DEBUG 日志精简 raw_message，避免 dumping base64。"""
+
+        segments = message.get("raw_message", []) or []
+        if not isinstance(segments, list):
+            return [{"_error": f"raw_message type={type(segments).__name__}"}]
+
+        out: List[dict] = []
+        for index, seg in enumerate(segments):
+            if not isinstance(seg, dict):
+                out.append({"index": index, "type": type(seg).__name__, "repr": cls._truncate_debug_text(seg, 120)})
+                continue
+            seg_type = str(seg.get("type") or "")
+            item: Dict[str, Any] = {"index": index, "type": seg_type}
+            data = seg.get("data")
+            if seg_type == "text":
+                item["data"] = cls._truncate_debug_text(data, 300)
+            elif seg_type == "reply":
+                if isinstance(data, dict):
+                    item["data"] = {
+                        "target_message_id": data.get("target_message_id"),
+                        "target_message_content": cls._truncate_debug_text(
+                            data.get("target_message_content"), 200
+                        ),
+                        "target_message_sender_id": data.get("target_message_sender_id"),
+                        "target_message_sender_nickname": data.get("target_message_sender_nickname"),
+                        "target_message_sender_cardname": data.get("target_message_sender_cardname"),
+                    }
+                else:
+                    item["data"] = cls._truncate_debug_text(data, 200)
+            elif seg_type == "forward":
+                if isinstance(data, list):
+                    item["data"] = {"node_count": len(data), "preview": cls._truncate_debug_text(data, 300)}
+                elif isinstance(data, dict):
+                    item["data"] = {k: cls._truncate_debug_text(v, 160) for k, v in list(data.items())[:12]}
+                else:
+                    item["data"] = cls._truncate_debug_text(data, 300)
+            elif seg_type in {"image", "emoji", "voice", "video", "record"}:
+                item["data"] = cls._truncate_debug_text(data, 80)
+                if seg.get("hash"):
+                    item["hash"] = seg.get("hash")
+                if seg.get("binary_data_base64"):
+                    item["binary_data_base64_len"] = len(str(seg.get("binary_data_base64") or ""))
+            elif seg_type == "at":
+                item["data"] = data
+            elif seg_type == "dict":
+                item["data"] = cls._truncate_debug_text(data, 400)
+            else:
+                item["data"] = cls._truncate_debug_text(data, 300)
+            out.append(item)
+        return out
+
+    def _log_auto_reply_hit(
+        self,
+        *,
+        kind: str,
+        match: dict,
+        message: Dict[str, Any],
+        match_text: str,
+        group_id: str,
+    ) -> None:
+        """插件被触发时输出 DEBUG 诊断信息。"""
+
+        trigger = str(match.get("trigger") or "")
+        rule = match.get("rule") if isinstance(match.get("rule"), dict) else {}
+        keyword = str(rule.get("keyword") or "")
+        message_id = str(message.get("message_id") or "")
+        reply_to = message.get("reply_to")
+        processed = str(message.get("processed_plain_text") or "")
+        seg_types = []
+        for seg in message.get("raw_message", []) or []:
+            if isinstance(seg, dict):
+                seg_types.append(str(seg.get("type") or ""))
+            else:
+                seg_types.append(type(seg).__name__)
+
+        self.ctx.logger.debug(
+            "关键词回复触发 kind=%s trigger=%r keyword=%r group_id=%s message_id=%s "
+            "reply_to=%r match_text=%r processed_plain_text=%r raw_seg_types=%s raw_message=%s",
+            kind,
+            trigger,
+            keyword,
+            group_id,
+            message_id,
+            reply_to,
+            self._truncate_debug_text(match_text, 300),
+            self._truncate_debug_text(processed, 800),
+            seg_types,
+            self._debug_raw_message(message),
+        )
+
     async def _is_admin(self, platform: str, user_id: str) -> bool:
         uid = str(user_id or "").strip()
         if not uid:
@@ -1257,6 +1356,13 @@ class KeywordsReplyPlugin(MaiBotPlugin):
                 is_mentioned=is_mentioned,
             )
             if command_match:
+                self._log_auto_reply_hit(
+                    kind="keyword",
+                    match=command_match,
+                    message=message,
+                    match_text=match_text,
+                    group_id=group_id,
+                )
                 await self._dispatch_reply(stream_id, command_match, message)
                 return "keyword"
 
@@ -1268,6 +1374,13 @@ class KeywordsReplyPlugin(MaiBotPlugin):
                 is_mentioned=is_mentioned,
             )
             if detect_match:
+                self._log_auto_reply_hit(
+                    kind="detect",
+                    match=detect_match,
+                    message=message,
+                    match_text=match_text,
+                    group_id=group_id,
+                )
                 await self._dispatch_reply(stream_id, detect_match, message)
                 return "detect"
         except Exception as exc:

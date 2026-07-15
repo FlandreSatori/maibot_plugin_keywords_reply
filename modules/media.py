@@ -83,20 +83,8 @@ def message_has_reply_context(message: Optional[Dict[str, Any]]) -> bool:
     return bool(_extract_reply_target_id(message or {}))
 
 
-def message_has_forward_context(message: Optional[Dict[str, Any]]) -> bool:
-    """判断消息是否包含合并转发段。"""
-
-    if not isinstance(message, dict):
-        return False
-    for seg in message.get("raw_message", []) or []:
-        if isinstance(seg, dict) and str(seg.get("type", "")).strip().lower() == "forward":
-            return True
-    text = str(message.get("processed_plain_text", "") or "")
-    return "【合并转发消息:" in text or "【合并转发消息：" in text
-
-
 def extract_user_typed_plain_text(message: Optional[Dict[str, Any]]) -> str:
-    """仅提取用户本条消息自己输入的文本段（不含 reply / forward 段与引用正文）。"""
+    """仅提取用户本条消息自己输入的文本段（不含 reply 段与引用正文）。"""
 
     return extract_management_command_text(message or {})
 
@@ -108,17 +96,11 @@ def resolve_match_plain_text(
 ) -> str:
     """按配置得到用于关键词/检测词匹配的正文。
 
-    - 合并转发：整条忽略（不匹配转发体、QQ 名，也不匹配同条附带文本）。
-    - ``respond_to_triggers_in_quote=False`` 且存在真实引用时：只匹配用户自己输入的文本段。
+    ``respond_to_triggers_in_quote=False`` 且存在真实引用时：只匹配用户自己输入的文本段。
     """
 
     message = message if isinstance(message, dict) else {}
     full = str(message.get("processed_plain_text", "") or "").strip()
-
-    # 合并转发消息整条不参与词库匹配（与引用开关无关）。
-    if message_has_forward_context(message):
-        return ""
-
     if respond_to_triggers_in_quote:
         return full
     if message_has_reply_context(message):
