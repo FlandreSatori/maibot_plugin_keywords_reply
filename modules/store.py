@@ -409,15 +409,18 @@ class KeywordsStore:
         return entry
 
     def read_media_base64(self, media_key: str, filename: str) -> Optional[str]:
-        """读取媒体文件并返回 base64；优先永久目录，其次缓存目录。"""
+        """读取媒体文件并返回 base64；优先永久目录，其次缓存目录。
+
+        ``videos`` 无入站缓存目录，只读永久 ``videos/``。
+        """
 
         if media_key not in _MEDIA_DIRS or not filename:
             return None
         name = os.path.basename(filename)
-        candidates = [
-            self.media_dirs[media_key] / name,
-            self.cache_dirs[media_key] / name,
-        ]
+        candidates = [self.media_dirs[media_key] / name]
+        cache_dir = self.cache_dirs.get(media_key)
+        if cache_dir is not None:
+            candidates.append(cache_dir / name)
         for path in candidates:
             if not path.is_file():
                 continue
@@ -642,49 +645,117 @@ class KeywordsStore:
         return max(0, weight)
 
     @staticmethod
+    def _summarize_segment(seg: dict, *, max_text: int) -> str:
+        """单段摘要：文本截断；媒体显示 ``[文件名]``。"""
+
+        if not isinstance(seg, dict):
+            return ""
+        seg_type = str(seg.get("type") or "").strip().lower()
+        if seg_type == "text":
+            text = str(seg.get("text") or "").replace("\n", " ").strip()
+            if not text:
+                return ""
+            if len(text) > max_text:
+                return text[:max_text] + "..."
+            return text
+        if seg_type in {"image", "emoji", "voice", "record", "video"}:
+            name = str(seg.get("file") or "").strip()
+            return f"[{name}]" if name else f"[{seg_type}]"
+        if seg_type == "at":
+            if seg.get("all"):
+                return "[@全体]"
+            uid = str(seg.get("user_id") or "").strip()
+            nick = str(seg.get("nickname") or "").strip()
+            if nick:
+                return f"[@{nick}]"
+            return f"[@{uid}]" if uid else "[@]"
+        if seg_type == "face":
+            face_id = seg.get("id")
+            return f"[表情ID:{face_id}]" if face_id is not None else "[表情ID]"
+        if seg_type == "music":
+            platform = str(seg.get("platform") or "").strip() or "?"
+            song_id = str(seg.get("id") or "").strip()
+            return f"[音乐:{platform}/{song_id}]" if song_id else "[音乐]"
+        return ""
+
+    @staticmethod
     def summarize_entry(entry: dict, max_text: int = 30) -> str:
-        text = (entry.get("text") or "").replace("\n", " ")
-        summary = text[:max_text]
-        if len(text) > max_text:
-            summary += "..."
-        placeholders = []
+        """列表/详情用的单条回复摘要。
+
+        优先遍历 ``parts``；媒体显示为 ``[xxxxxxxx.jpg]`` / ``[xxxxxx.silk]`` 等，避免纯媒体词条显示成 ``[空]``。
+        """
+
+        entry = entry or {}
+        meta: List[str] = []
         weight = KeywordsStore.normalize_entry_weight(entry)
         if weight != 100:
-            placeholders.append(f"[权重:{weight}]")
+            meta.append(f"[权重:{weight}]")
         probability = KeywordsStore.normalize_entry_probability(entry)
         if probability != 100:
-            placeholders.append(f"[概率:{probability}%]")
-        if entry.get("images"):
-            placeholders.append("[图片]")
-        if entry.get("records"):
-            placeholders.append("[语音]")
-        if entry.get("emojis"):
-            placeholders.append("[表情]")
-        if entry.get("videos"):
-            placeholders.append("[视频]")
-        if entry.get("ats"):
-            placeholders.append("[@]")
-        if entry.get("faces"):
-            placeholders.append("[表情ID]")
-        if entry.get("music_cards"):
-            placeholders.append("[音乐]")
-        if not summary:
-            return "".join(placeholders) or "[空]"
-        return f"{summary}{''.join(placeholders)}"
+            meta.append(f"[概率:{probability}%]")
+
+        body_parts: List[str] = []
+        for part in KeywordsStore.get_ordered_parts(entry):
+            for seg in KeywordsStore.get_part_segments(part):
+                piece = KeywordsStore._summarize_segment(seg, max_text=max_text)
+                if piece:
+                    body_parts.append(piece)
+
+        # 旧扁平字段兜底（无 parts / 迁移未完成时）
+        if not body_parts:
+            text = (entry.get("text") or "").replace("\n", " ").strip()
+            if text:
+                body_parts.append(text[:max_text] + ("..." if len(text) > max_text else ""))
+            for key, label in (
+                ("images", None),
+                ("records", None),
+                ("emojis", None),
+                ("videos", None),
+            ):
+                for item in entry.get(key) or []:
+                    if not isinstance(item, dict):
+                        continue
+                    name = str(item.get("file") or "").strip()
+                    body_parts.append(f"[{name}]" if name else f"[{label or key}]")
+            for at in entry.get("ats") or []:
+                if isinstance(at, dict):
+                    nick = str(at.get("nickname") or "").strip()
+                    uid = str(at.get("user_id") or "").strip()
+                    body_parts.append(f"[@{nick or uid}]" if (nick or uid) else "[@]")
+            for face in entry.get("faces") or []:
+                if isinstance(face, dict) and face.get("id") is not None:
+                    body_parts.append(f"[表情ID:{face.get('id')}]")
+            for card in entry.get("music_cards") or []:
+                if not isinstance(card, dict):
+                    continue
+                platform = str(card.get("platform") or "").strip() or "?"
+                song_id = str(card.get("id") or "").strip()
+                if song_id:
+                    body_parts.append(f"[音乐:{platform}/{song_id}]")
+
+        body = "".join(body_parts)
+        if not body:
+            return "".join(meta) or "[空]"
+        return f"{body}{''.join(meta)}"
 
     @staticmethod
     def placeholder_text(entry: dict) -> str:
-        lines = []
+        lines: List[str] = []
+        for part in KeywordsStore.get_ordered_parts(entry or {}):
+            for seg in KeywordsStore.get_part_segments(part):
+                piece = KeywordsStore._summarize_segment(seg, max_text=200)
+                if piece:
+                    lines.append(piece)
+        if lines:
+            return "\n".join(lines).strip()
+
+        entry = entry or {}
         if entry.get("text"):
-            lines.append(entry["text"])
-        if entry.get("images"):
-            lines.append(f"[图片 x{len(entry['images'])}]")
-        if entry.get("records"):
-            lines.append(f"[语音 x{len(entry['records'])}]")
-        if entry.get("emojis"):
-            lines.append(f"[表情 x{len(entry['emojis'])}]")
-        if entry.get("videos"):
-            lines.append(f"[视频 x{len(entry['videos'])}]")
+            lines.append(str(entry["text"]))
+        for key in ("images", "records", "emojis", "videos"):
+            for item in entry.get(key) or []:
+                if isinstance(item, dict) and item.get("file"):
+                    lines.append(f"[{item['file']}]")
         if entry.get("ats"):
             lines.append(f"[@ x{len(entry['ats'])}]")
         if entry.get("music_cards"):
