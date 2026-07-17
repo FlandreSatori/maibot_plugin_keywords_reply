@@ -7,10 +7,8 @@
 
     python editor/server.py --data-dir "path/to/MaiBot/data/plugins/maibot_plugin.keywords_reply"
     python editor/server.py --data-dir "..." --port 8765
-    # 允许局域网其它设备访问（需放行防火墙端口）：
-    python editor/server.py --data-dir "..." --host 0.0.0.0 --port 8765
 
-然后在浏览器打开 http://127.0.0.1:8765 （或本机局域网 IP）。
+然后在本机浏览器打开 http://127.0.0.1:8765 。
 """
 
 from __future__ import annotations
@@ -95,7 +93,6 @@ class EditorHandler(SimpleHTTPRequestHandler):
         try:
             data_file = self.data_dir / "keywords.json"
             result = merge_keywords_file(data_file)
-            # 经 store 规范化后再回读，保证 aliases 等字段完整
             store = KeywordsStore(self.data_dir)
             store.setup()
             result["data"] = store.data
@@ -175,9 +172,9 @@ def main() -> None:
     parser.add_argument(
         "--host",
         default="127.0.0.1",
-        help="监听地址；本机访问用 127.0.0.1，局域网访问用 0.0.0.0",
+        help="监听地址（默认 127.0.0.1）",
     )
-    parser.add_argument("--port", type=int, default=8765)
+    parser.add_argument("--port", type=int, default=8765, help="监听端口（默认 8765）")
     args = parser.parse_args()
 
     data_dir = Path(args.data_dir).expanduser().resolve()
@@ -187,16 +184,8 @@ def main() -> None:
     server = ThreadingHTTPServer((args.host, args.port), handler_cls)
     print(f"词库编辑器已启动: http://{args.host}:{args.port}")
     if args.host in {"0.0.0.0", "::"}:
-        print("局域网访问（在其它设备浏览器打开）：")
-        lan_ips = _lan_ipv4_addresses()
-        if lan_ips:
-            for ip in lan_ips:
-                print(f"  http://{ip}:{args.port}")
-        else:
-            print(f"  http://<本机局域网IP>:{args.port}")
-        print("注意：未做登录鉴权，仅建议在可信局域网内使用；Windows 若打不开请放行防火墙端口。")
-    else:
-        print("仅本机可访问。若要从局域网其它设备打开，请加参数：--host 0.0.0.0")
+        for ip in _lan_ipv4_addresses():
+            print(f"  http://{ip}:{args.port}")
     print(f"数据目录: {data_dir}")
     print("保存后请在 MaiBot 群聊执行 /重载词库，或重启 MaiBot 使改动生效。")
     try:

@@ -4,7 +4,7 @@
 
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](LICENSE)
 [![MaiBot SDK](https://img.shields.io/badge/MaiBot%20SDK-2.x-green.svg)](https://github.com/MaiM-with-u/MaiBot)
-[![Version](https://img.shields.io/badge/version-1.1.10-orange.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.1.12-orange.svg)](CHANGELOG.md)
 
 ---
 
@@ -85,23 +85,13 @@ data/plugins/maibot_plugin.keywords_reply/
 editor\editor.bat
 ```
 
-局域网其它设备访问（工作机起服务，另一台设备打开浏览器）：
-
-```bat
-editor\editor-lan.bat
-```
-
-启动后终端会打印 `http://192.168.x.x:8765`，在同一局域网设备上打开即可（无鉴权，仅可信局域网；必要时放行防火墙 8765）。
-
 **命令行**
 
 ```bash
 python editor/server.py --data-dir "你的MaiBot/data/plugins/maibot_plugin.keywords_reply"
-# 局域网：
-python editor/server.py --data-dir "..." --host 0.0.0.0 --port 8765
 ```
 
-浏览器访问 `http://127.0.0.1:8765`（或局域网 IP）。保存后执行 `/重载词库` 或重启 MaiBot。
+浏览器访问 `http://127.0.0.1:8765`（仅本机）。保存后执行 `/重载词库` 或重启 MaiBot。
 
 图片 / 语音 / 表情段只需填写文件名（如 `a.jpg`）；目录前缀由类型自动固定为 `images/`、`records/`、`emojis/`。
 
@@ -214,11 +204,6 @@ entry 使用有序 `parts[]` 时，每一段单独发送一条消息，顺序与
 | | `ignore_cooldown_on_exact_match` | 完全匹配时无视冷却 |
 | `[template]` | `enable_text_template` | 启用变量模板 |
 | `[media_cache]` | `group_whitelist` | 允许缓存入站富媒体的群号；**默认为空** |
-
-```toml
-[media_cache]
-group_whitelist = ["673486917"]  # 填入需要引用导入媒体的测试群
-```
 
 ---
 

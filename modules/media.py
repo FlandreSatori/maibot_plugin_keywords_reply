@@ -18,11 +18,17 @@ MaiBot 出站消息段格式（见 host message_utils）::
 from __future__ import annotations
 
 import base64
+import http.client
+import ipaddress
 import logging
 import re
+import socket
+import ssl
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FuturesTimeoutError
 from pathlib import Path
-from typing import Any, Dict, List, Optional
-from urllib import request as urllib_request
+from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import urljoin, urlparse
 
 from .store import KeywordsStore
 from .templates import render_template_text, strip_auto_media_text
@@ -43,6 +49,16 @@ _MUSIC_TEXT_PLACEHOLDER_PATTERN = re.compile(
     r"\[(?:网易云音乐|QQ音乐|音乐)[^\]]*\]",
     re.IGNORECASE,
 )
+
+# 出站媒体下载：严格超时 + 体积上限，避免 DNS/慢连接拖死主流程
+_DNS_TIMEOUT_SEC = 2.0
+_CONNECT_TIMEOUT_SEC = 3.0
+_READ_TIMEOUT_SEC = 5.0
+_MAX_DOWNLOAD_BYTES = 5 * 1024 * 1024
+_DOWNLOAD_CHUNK_SIZE = 64 * 1024
+_MAX_REDIRECTS = 5
+_DOWNLOAD_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+_REDIRECT_STATUS = frozenset({301, 302, 303, 307, 308})
 
 
 _MGMT_COMMAND_PATTERN = re.compile(
@@ -250,25 +266,319 @@ def _segments_of(message: Any) -> List[dict]:
     return segments if isinstance(segments, list) else []
 
 
-def _download_url_base64(url: str, *, timeout: int = 15) -> str:
-    """尽力从 HTTP(S) URL 下载资源并转为 base64。"""
+def _is_blocked_ip(address: str) -> bool:
+    """拒绝回环 / 私有 / 链路本地 / 保留 / 组播等非公网地址。"""
+
+    try:
+        ip = ipaddress.ip_address(str(address or "").strip())
+    except ValueError:
+        return True
+    # is_global=False 覆盖 loopback、private、link-local、reserved、multicast、unspecified 等
+    if not ip.is_global:
+        return True
+    # 额外拦截常见云元数据网段（IPv4）
+    if ip.version == 4 and ip in ipaddress.ip_network("169.254.0.0/16"):
+        return True
+    return False
+
+
+def _is_blocked_hostname(hostname: str) -> bool:
+    host = str(hostname or "").strip().lower().rstrip(".")
+    if not host:
+        return True
+    if host == "localhost" or host.endswith(".localhost") or host.endswith(".local"):
+        return True
+    if host in {"metadata.google.internal", "metadata", "kubernetes.default", "kubernetes.default.svc"}:
+        return True
+    return False
+
+
+def _default_port(scheme: str, port: Optional[int]) -> int:
+    if port:
+        return int(port)
+    return 443 if scheme == "https" else 80
+
+
+def _host_header(hostname: str, port: int, scheme: str) -> str:
+    """构造 Host 头；IPv6 字面量加方括号。"""
+
+    try:
+        ipaddress.IPv6Address(hostname)
+        host = f"[{hostname}]"
+    except ValueError:
+        host = hostname
+    default = 443 if scheme == "https" else 80
+    if port == default:
+        return host
+    return f"{host}:{port}"
+
+
+def _getaddrinfo_with_timeout(
+    hostname: str,
+    port: int,
+    *,
+    timeout: float = _DNS_TIMEOUT_SEC,
+) -> List[Tuple[Any, ...]]:
+    """带超时的 DNS 解析；超时则抛出 TimeoutError。"""
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(socket.getaddrinfo, hostname, port, type=socket.SOCK_STREAM)
+        try:
+            return list(future.result(timeout=timeout))
+        except FuturesTimeoutError as exc:
+            raise TimeoutError(f"DNS resolve timed out after {timeout}s: {hostname}") from exc
+
+
+def _literal_public_targets(hostname: str, port: int) -> List[Tuple[int, Tuple[Any, ...]]]:
+    """字面量 IP → 可 connect 的 (family, sockaddr) 列表；非公网则空。"""
+
+    try:
+        ip = ipaddress.ip_address(hostname)
+    except ValueError:
+        return []
+    if _is_blocked_ip(hostname):
+        return []
+    if ip.version == 4:
+        return [(socket.AF_INET, (hostname, port))]
+    return [(socket.AF_INET6, (hostname, port, 0, 0))]
+
+
+def _resolve_public_connect_targets(
+    hostname: str,
+    port: int,
+    *,
+    dns_timeout: float = _DNS_TIMEOUT_SEC,
+) -> List[Tuple[int, Tuple[Any, ...]]]:
+    """解析并过滤出全部为公网的连接目标；任一非公网则拒绝（返回空）。"""
+
+    literal = _literal_public_targets(hostname, port)
+    if literal or _looks_like_ip_literal(hostname):
+        return literal
+
+    try:
+        addrinfos = _getaddrinfo_with_timeout(hostname, port, timeout=dns_timeout)
+    except (OSError, TimeoutError):
+        return []
+    if not addrinfos:
+        return []
+
+    targets: List[Tuple[int, Tuple[Any, ...]]] = []
+    for info in addrinfos:
+        family = int(info[0])
+        sockaddr = info[4]
+        ip_text = str(sockaddr[0] if sockaddr else "")
+        if not ip_text or _is_blocked_ip(ip_text):
+            return []
+        targets.append((family, sockaddr))
+    return targets
+
+
+def _looks_like_ip_literal(hostname: str) -> bool:
+    try:
+        ipaddress.ip_address(hostname)
+        return True
+    except ValueError:
+        return False
+
+
+def _url_targets_public_network(url: str, *, dns_timeout: float = _DNS_TIMEOUT_SEC) -> bool:
+    """校验 URL 解析后的主机名与 DNS 结果均指向公网地址。"""
 
     normalized = str(url or "").strip()
-    if not normalized.startswith(("http://", "https://")):
-        return ""
     try:
-        req = urllib_request.Request(
-            normalized,
+        parsed = urlparse(normalized)
+    except Exception:
+        return False
+    if parsed.scheme not in {"http", "https"}:
+        return False
+    hostname = parsed.hostname
+    if not hostname or _is_blocked_hostname(hostname):
+        return False
+    port = _default_port(parsed.scheme, parsed.port)
+    return bool(_resolve_public_connect_targets(hostname, port, dns_timeout=dns_timeout))
+
+
+def _read_response_limited(resp: http.client.HTTPResponse, max_bytes: int) -> bytes:
+    """分块读取响应，超过上限则中断。"""
+
+    content_length = resp.getheader("Content-Length")
+    if content_length and content_length.isdigit() and int(content_length) > max_bytes:
+        raise ValueError(f"Content-Length {content_length} exceeds limit {max_bytes}")
+
+    chunks: List[bytes] = []
+    total = 0
+    while True:
+        chunk = resp.read(_DOWNLOAD_CHUNK_SIZE)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > max_bytes:
+            raise ValueError(f"response body exceeds limit {max_bytes}")
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+def _http_get_via_resolved_ip(
+    *,
+    scheme: str,
+    hostname: str,
+    port: int,
+    path: str,
+    family: int,
+    sockaddr: Tuple[Any, ...],
+    connect_timeout: float,
+    read_timeout: float,
+    max_bytes: int,
+) -> Tuple[str, int, str, bytes]:
+    """连到已校验的公网 IP，返回 (kind, status, location, body)。
+
+    kind: ``ok`` | ``redirect`` | ``error``
+    """
+
+    sock: Optional[socket.socket] = None
+    conn: Optional[http.client.HTTPConnection] = None
+    try:
+        sock = socket.socket(family, socket.SOCK_STREAM)
+        sock.settimeout(connect_timeout)
+        sock.connect(sockaddr)
+        sock.settimeout(read_timeout)
+        if scheme == "https":
+            context = ssl.create_default_context()
+            sock = context.wrap_socket(sock, server_hostname=hostname)
+
+        conn = http.client.HTTPConnection(hostname, port, timeout=read_timeout)
+        conn.sock = sock
+        sock = None  # 交由 conn.close 负责
+        conn.request(
+            "GET",
+            path,
             headers={
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                "Host": _host_header(hostname, port, scheme),
+                "User-Agent": _DOWNLOAD_USER_AGENT,
                 "Accept": "*/*",
+                "Connection": "close",
             },
         )
-        with urllib_request.urlopen(req, timeout=timeout) as resp:
-            return base64.b64encode(resp.read()).decode("utf-8")
-    except Exception as exc:
-        logger.warning(f"下载媒体失败: {normalized[:120]} error={exc}")
+        resp = conn.getresponse()
+        status = int(resp.status)
+        if status in _REDIRECT_STATUS:
+            location = str(resp.getheader("Location") or "").strip()
+            try:
+                resp.read(_DOWNLOAD_CHUNK_SIZE)
+            except Exception:
+                pass
+            return ("redirect", status, location, b"")
+        if status < 200 or status >= 300:
+            try:
+                resp.read(_DOWNLOAD_CHUNK_SIZE)
+            except Exception:
+                pass
+            return ("error", status, "", b"")
+        body = _read_response_limited(resp, max_bytes)
+        return ("ok", status, "", body)
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+        elif sock is not None:
+            try:
+                sock.close()
+            except Exception:
+                pass
+
+
+def _request_path(parsed) -> str:  # type: ignore[no-untyped-def]
+    path = parsed.path or "/"
+    if parsed.query:
+        return f"{path}?{parsed.query}"
+    return path
+
+
+def _download_url_base64(
+    url: str,
+    *,
+    dns_timeout: float = _DNS_TIMEOUT_SEC,
+    connect_timeout: float = _CONNECT_TIMEOUT_SEC,
+    read_timeout: float = _READ_TIMEOUT_SEC,
+    max_bytes: int = _MAX_DOWNLOAD_BYTES,
+) -> str:
+    """尽力从 HTTP(S) URL 下载资源并转为 base64。
+
+    - 拒绝 localhost / 私有网段 / 链路本地 / 云元数据等（SSRF）
+    - DNS / 连接 / 读取分阶段超时
+    - 连已解析公网 IP（Host/SNI 仍用原主机名），降低 DNS 重绑定风险
+    - 流式读取并限制最大体积
+    """
+
+    current = str(url or "").strip()
+    if not current.startswith(("http://", "https://")):
         return ""
+
+    for _ in range(_MAX_REDIRECTS + 1):
+        try:
+            parsed = urlparse(current)
+        except Exception as exc:
+            logger.warning(f"下载媒体失败: {current[:120]} error={exc}")
+            return ""
+        if parsed.scheme not in {"http", "https"}:
+            logger.warning(f"拒绝下载非公网媒体 URL: {current[:120]}")
+            return ""
+        hostname = parsed.hostname
+        if not hostname or _is_blocked_hostname(hostname):
+            logger.warning(f"拒绝下载非公网媒体 URL: {current[:120]}")
+            return ""
+
+        port = _default_port(parsed.scheme, parsed.port)
+        try:
+            targets = _resolve_public_connect_targets(hostname, port, dns_timeout=dns_timeout)
+        except Exception as exc:
+            logger.warning(f"下载媒体失败: {current[:120]} error={exc}")
+            return ""
+        if not targets:
+            logger.warning(f"拒绝下载非公网媒体 URL: {current[:120]}")
+            return ""
+
+        path = _request_path(parsed)
+        last_error: Optional[BaseException] = None
+        for family, sockaddr in targets:
+            try:
+                kind, status, location, body = _http_get_via_resolved_ip(
+                    scheme=parsed.scheme,
+                    hostname=hostname,
+                    port=port,
+                    path=path,
+                    family=family,
+                    sockaddr=sockaddr,
+                    connect_timeout=connect_timeout,
+                    read_timeout=read_timeout,
+                    max_bytes=max_bytes,
+                )
+            except Exception as exc:
+                last_error = exc
+                continue
+
+            if kind == "ok":
+                return base64.b64encode(body).decode("utf-8")
+            if kind == "redirect":
+                if not location:
+                    logger.warning(f"下载媒体失败: {current[:120]} error=empty redirect")
+                    return ""
+                next_url = urljoin(current, location)
+                if not _url_targets_public_network(next_url, dns_timeout=dns_timeout):
+                    logger.warning(f"拒绝跟随非公网重定向: {str(next_url)[:120]}")
+                    return ""
+                current = next_url
+                break
+            last_error = RuntimeError(f"HTTP {status}")
+        else:
+            logger.warning(f"下载媒体失败: {current[:120]} error={last_error or 'no route'}")
+            return ""
+        continue
+
+    logger.warning(f"下载媒体失败: {str(url)[:120]} error=too many redirects")
+    return ""
 
 
 def _candidate_media_urls(seg: dict) -> List[str]:
@@ -296,7 +606,7 @@ def _candidate_media_urls(seg: dict) -> List[str]:
     return candidates
 
 
-def _resolve_segment_binary_base64(seg: dict, *, timeout: int = 15) -> str:
+def _resolve_segment_binary_base64(seg: dict) -> str:
     """从消息段解析可用于落盘的 base64 数据。"""
 
     direct = str(seg.get("binary_data_base64", "") or "").strip()
@@ -305,7 +615,7 @@ def _resolve_segment_binary_base64(seg: dict, *, timeout: int = 15) -> str:
 
     for candidate in _candidate_media_urls(seg):
         if candidate.startswith(("http://", "https://")):
-            downloaded = _download_url_base64(candidate, timeout=timeout)
+            downloaded = _download_url_base64(candidate)
             if downloaded:
                 return downloaded
             continue
@@ -474,7 +784,7 @@ def _append_media_segment(
     normalized_type = "voice" if seg_type == "record" else seg_type
     if normalized_type not in {"image", "emoji", "voice"}:
         return
-    b64 = _resolve_segment_binary_base64(seg, timeout=15)
+    b64 = _resolve_segment_binary_base64(seg)
     media_key = {
         "image": "images",
         "emoji": "emojis",

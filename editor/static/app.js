@@ -636,7 +636,7 @@ function renderMessageGroup(message, messageIndex, rowId) {
   return `
     <div class="message-group" data-message-id="${message.id}">
       <div class="message-head">
-        <span class="message-label">消息 ${messageIndex + 1}</span>
+        <span class="message-label">消息段 ${messageIndex + 1}</span>
         <span class="message-summary">${escapeHtml(describeMessageSegments(message))}</span>
         <button type="button" class="link-btn" data-action="remove-message" data-message-id="${message.id}" title="删除本条聊天消息">删除消息</button>
       </div>

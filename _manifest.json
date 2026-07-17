@@ -1,6 +1,6 @@
 {
   "manifest_version": 2,
-  "version": "1.1.10",
+  "version": "1.1.12",
   "name": "关键词回复",
   "description": "关键词/检测词自动回复插件，支持指令触发与自动监听、多别名、正则匹配、图文/At/表情/语音/本地视频富媒体回复、群聊黑白名单、引用内触发开关、合并转发忽略与变量模板。由 AstrBot 同名插件迁移而来。",
   "author": {
@@ -16,7 +16,7 @@
   "changelog": "CHANGELOG.md",
   "host_application": {
     "min_version": "1.0.0",
-    "max_version": "1.0.0"
+    "max_version": "1.99.99"
   },
   "sdk": {
     "min_version": "2.0.0",
