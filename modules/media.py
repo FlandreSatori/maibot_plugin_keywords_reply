@@ -1439,6 +1439,22 @@ async def capture_media_from_trigger(ctx: Any, store: KeywordsStore, message: Di
     return empty
 
 
+def _entry_has_media(store: KeywordsStore, entry: Optional[dict]) -> bool:
+    """entry 是否含图片 / 表情 / 语音 / 视频等媒体段。"""
+
+    if not isinstance(entry, dict):
+        return False
+    for key in ("images", "emojis", "records", "videos"):
+        if entry.get(key):
+            return True
+    media_types = {"image", "emoji", "voice", "record", "video"}
+    for part in store.get_ordered_parts(entry):
+        for seg in store.get_part_segments(part):
+            if str(seg.get("type") or "").strip().lower() in media_types:
+                return True
+    return False
+
+
 async def capture_from_reply(
     ctx: Any,
     store: KeywordsStore,
@@ -1446,7 +1462,12 @@ async def capture_from_reply(
     *,
     media_cache: Optional[Dict[str, dict]] = None,
 ) -> dict:
-    """从被引用消息中捕获完整内容（文本 + 媒体）。"""
+    """从被引用消息中捕获完整内容（文本 + 媒体）。
+
+    入站 ``media_cache`` 与 ``get_by_id`` 常指向同一条消息；二者都有媒体时
+    不可盲目 ``merge_entries``，否则同一张图会入库两次并连续发送两次。
+    优先使用拉取结果（通常含二进制）；仅当拉取无媒体时回退缓存（历史语音常见）。
+    """
 
     empty = store.empty_entry()
     target_id = _extract_reply_target_id(message)
@@ -1462,7 +1483,15 @@ async def capture_from_reply(
     stream_id = str(message.get("session_id", "") or "").strip() if isinstance(message, dict) else ""
     segments = await _fetch_message_segments(ctx, target_id, stream_id)
     fetched_entry = build_entry_from_segments(segments, store, include_text=True) if segments else empty
-    merged = store.merge_entries(cached_entry, fetched_entry)
+
+    if _entry_has_media(store, fetched_entry):
+        merged = fetched_entry
+    elif store.entry_has_payload(cached_entry):
+        # 缓存补媒体（如语音），拉取侧补文本 / At 等
+        merged = store.merge_entries(cached_entry, fetched_entry)
+    else:
+        merged = fetched_entry
+
     return sanitize_entry_text(merged, store)
 
 

@@ -470,7 +470,12 @@ class KeywordsReplyPlugin(MaiBotPlugin):
         message_id = str(message.get("message_id", "") or "").strip()
         if message_id:
             cached = self._inbound_media_cache.pop(message_id, None)
-            if isinstance(cached, dict) and self.store.entry_has_payload(cached):
+            # 命令消息段已含媒体时不再合并入站缓存，避免与 raw_message 二次抓取叠加
+            if (
+                isinstance(cached, dict)
+                and self.store.entry_has_payload(cached)
+                and not segment_built
+            ):
                 entry = self.store.merge_entries(entry, cached)
 
         if not segment_built:
