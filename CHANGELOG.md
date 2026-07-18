@@ -1,5 +1,9 @@
 # 更新日志
 
+## 1.2.0
+
+- 词库编辑器支持 ``--token`` 固定访问密码：用 ``http://主机:端口/?token=密码`` 鉴权，通过后写入 Cookie。
+
 ## 1.1.15
 
 - 修复发送视频``read_media_base64`` 访问不存在的 ``media_cache/videos``

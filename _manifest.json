@@ -1,6 +1,6 @@
 {
   "manifest_version": 2,
-  "version": "1.1.15",
+  "version": "1.2.0",
   "name": "关键词回复",
   "description": "关键词/检测词自动回复插件，支持指令触发与自动监听、多别名、正则匹配、图文/At/表情/语音/本地视频富媒体回复、群聊黑白名单、引用内触发开关、合并转发忽略与变量模板。由 AstrBot 同名插件迁移而来。",
   "author": {
@@ -32,7 +32,7 @@
   ],
   "i18n": {
     "default_locale": "zh-CN",
-    "locales_path": "_locales",
+    "locales_path": "",
     "supported_locales": [
       "zh-CN"
     ]

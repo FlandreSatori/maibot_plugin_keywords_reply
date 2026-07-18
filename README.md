@@ -4,7 +4,7 @@
 
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](LICENSE)
 [![MaiBot SDK](https://img.shields.io/badge/MaiBot%20SDK-2.x-green.svg)](https://github.com/MaiM-with-u/MaiBot)
-[![Version](https://img.shields.io/badge/version-1.1.15-orange.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.2.0-orange.svg)](CHANGELOG.md)
 
 ---
 
@@ -89,9 +89,11 @@ editor\editor.bat
 
 ```bash
 python editor/server.py --data-dir "你的MaiBot/data/plugins/maibot_plugin.keywords_reply"
+# 局域网访问建议加密码：
+# python editor/server.py --data-dir "..." --host 0.0.0.0 --token "你的密码"
 ```
 
-浏览器访问 `http://127.0.0.1:8765`（仅本机）。保存后执行 `/重载词库` 或重启 MaiBot。
+浏览器访问 `http://127.0.0.1:8765`（仅本机）。若设置了 `--token`，请用 `http://主机:端口/?token=密码`。保存后执行 `/重载词库` 或重启 MaiBot。
 
 图片 / 语音 / 表情段只需填写文件名（如 `a.jpg`）；目录前缀由类型自动固定为 `images/`、`records/`、`emojis/`。
 
