@@ -4,15 +4,20 @@
   并把二进制内容落盘（通过 :class:`KeywordsStore`）。
 - 发送：把存储的 entry 转换为 ``ctx.send.hybrid`` / ``ctx.send.forward`` 使用的消息段。
 
-MaiBot 出站消息段格式（见 host message_utils）::
+MaiBot 出站消息段格式（见 host message_utils / NapCat 适配器）::
 
     {"type": "text", "content": "..."}
     {"type": "image", "content": <base64>}
     {"type": "emoji", "content": <base64>}
     {"type": "voice", "content": <base64>}
-    {"type": "dict", "data": {"type": "video", "data": {"file": "base64://..."}}}
     {"type": "at", "data": {"target_user_id": "123", "target_user_nickname": "昵称"}}
     {"type": "reply", "data": {"target_message_id": "..."}}
+
+音乐 / QQ 表情 / 视频为兼容旧版 Host，经 ``dict`` 包装发出（新宿主与 NapCat 均可识别）::
+
+    {"type": "dict", "data": {"type": "music", "data": {"type": "163", "id": "28481103"}}}
+    {"type": "dict", "data": {"type": "face", "data": {"id": 1}}}
+    {"type": "dict", "data": {"type": "video", "data": {"file": "base64://..."}}}
 """
 
 from __future__ import annotations
@@ -749,23 +754,42 @@ def supported_music_platforms_text() -> str:
     return "163, qq, migu, kugou, kuwo（默认 163）"
 
 
+def _build_passthrough_send_segment(segment_type: str, payload: Any) -> dict:
+    """构造新旧 MaiBot 均可 hybrid 发送的透传段。
+
+    - **旧宿主（1.0.x / 未修补的 1.1.x）**：``hybrid`` 对未知 ``type`` 会丢掉外层类型，
+      必须用 ``type: dict`` 包一层，把真实类型放进 ``data.type``。
+    - **新宿主（已保留 music/face/video 外层 type）**：仍接受该格式，出站时可再展开为原生段。
+    - **NapCat 适配器**：``dict`` 与原生 ``music|face|video`` 均可识别。
+    """
+
+    return {"type": "dict", "data": {"type": segment_type, "data": payload}}
+
+
 def _build_music_send_segment(card: dict) -> Optional[dict]:
-    """构建 MaiBot/OneBot 可识别的音乐卡片发送段。"""
+    """构建音乐卡片发送段（兼容 MaiBot 1.0.x / 1.1.x）。
+
+    逻辑负载等价于 OneBot / NapCat 原生::
+
+        {"type": "music", "data": {"type": "163", "id": "28481103"}}
+
+    实际经 ``dict`` 包装发出，避免旧版 Host ``hybrid`` 剥离 ``music`` 类型。
+    """
 
     platform = str(card.get("platform") or "").strip()
     song_id = str(card.get("id") or "").strip()
     if not platform or not song_id:
         return None
-    return {
-        "type": "dict",
-        "data": {
-            "type": "music",
-            "data": {
-                "type": platform,
-                "id": song_id,
-            },
+    # NapCat 出站编码器仅稳定支持 163 / qq；其余平台回退为网易云。
+    if platform not in {"163", "qq"}:
+        platform = "163"
+    return _build_passthrough_send_segment(
+        "music",
+        {
+            "type": platform,
+            "id": song_id,
         },
-    }
+    )
 
 
 def _append_media_segment(
@@ -798,13 +822,13 @@ def _append_media_segment(
 
 
 def _build_video_send_segment(b64: str) -> Optional[dict]:
-    """构造 NapCat/OneBot 可识别的视频发送段（经 ``dict`` 包装；数据来自本地 ``videos/``）。"""
+    """构造视频发送段（兼容 MaiBot 1.0.x / 1.1.x；数据来自本地 ``videos/``）。"""
 
     normalized = str(b64 or "").strip()
     if not normalized:
         return None
     file_ref = normalized if normalized.startswith("base64://") else f"base64://{normalized}"
-    return {"type": "dict", "data": {"type": "video", "data": {"file": file_ref}}}
+    return _build_passthrough_send_segment("video", {"file": file_ref})
 
 
 def _strip_music_share_text(text: str) -> str:
@@ -1144,9 +1168,9 @@ def sanitize_entry_faces(entry: dict) -> None:
 
 
 def _build_face_send_segment(face_id: int) -> dict:
-    """构造 MaiBot 可透传的 QQ face 段（经 ``dict`` 包装保留 ``type``）。"""
+    """构造 QQ face 发送段（兼容 MaiBot 1.0.x / 1.1.x）。"""
 
-    return {"type": "dict", "data": {"type": "face", "data": {"id": face_id}}}
+    return _build_passthrough_send_segment("face", {"id": face_id})
 
 
 def sanitize_entry_text(entry: dict, store: KeywordsStore) -> dict:

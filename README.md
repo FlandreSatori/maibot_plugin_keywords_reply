@@ -3,8 +3,9 @@
 > MaiBot 关键词 / 检测词自动回复插件。由 [AstrBot 同名插件](https://github.com/Foolllll-J/astrbot_plugin_keywords_reply) 迁移至 MaiBot SDK 2.x。
 
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](LICENSE)
-[![MaiBot SDK](https://img.shields.io/badge/MaiBot%20SDK-2.x-green.svg)](https://github.com/MaiM-with-u/MaiBot)
-[![Version](https://img.shields.io/badge/version-1.2.0-orange.svg)](CHANGELOG.md)
+[![MaiBot](https://img.shields.io/badge/MaiBot-1.0%20%7C%201.1-blue.svg)](https://github.com/Mai-with-u/MaiBot)
+[![MaiBot SDK](https://img.shields.io/badge/MaiBot%20SDK-2.x-green.svg)](https://github.com/Mai-with-u/maibot-plugin-sdk)
+[![Version](https://img.shields.io/badge/version-1.2.2-orange.svg)](CHANGELOG.md)
 
 ---
 
@@ -14,6 +15,7 @@
 
 - [特性](#特性)
 - [快速开始](#快速开始)
+- [宿主兼容性](#宿主兼容性)
 - [外部编辑器](#外部编辑器)
 - [管理命令](#管理命令)
 - [回复机制](#回复机制)
@@ -44,6 +46,12 @@
 
 ## 快速开始
 
+### 环境要求
+
+- **MaiBot** ``1.0.0``–``1.99.99``（在 ``1.0.x`` 与 ``1.1.4`` 验证）
+- **MaiBot Plugin SDK** ``2.x``
+- QQ 侧建议使用官方 [MaiBot-Napcat-Adapter](https://github.com/Mai-with-u/MaiBot-Napcat-Adapter)
+
 ### 安装
 
 将本仓库放入 MaiBot 插件目录，确保 `_manifest.json` 中 `id` 为 `maibot_plugin.keywords_reply`，重启 MaiBot 或在插件管理中启用。
@@ -72,6 +80,43 @@ data/plugins/maibot_plugin.keywords_reply/
    ```
 2. 或使用 [外部编辑器](#外部编辑器) 批量维护词库。
 3. 外部保存后执行 `/重载词库` 使插件读取最新数据。
+
+---
+
+## 宿主兼容性
+
+本插件声明兼容 **MaiBot 1.0.x 与 1.1.x**（manifest：`1.0.0`–`1.99.99`）。
+
+### 音乐 / QQ 表情 / 视频出站
+
+| 宿主 | 说明 |
+|------|------|
+| **1.0.x**（及未修补的旧 hybrid） | 对未知消息段类型会丢掉外层 ``type``。本插件因此用 ``dict`` 包装发送，把真实类型放在 ``data.type``。 |
+| **1.1.x** + NapCat 适配器 | 同样接受上述 ``dict`` 包装；新宿主若已保留 ``music``/``face``/``video`` 外层类型，也可直接识别原生段。 |
+
+出站示例（音乐卡片）::
+
+```json
+{
+  "type": "dict",
+  "data": {
+    "type": "music",
+    "data": { "type": "163", "id": "28481103" }
+  }
+}
+```
+
+等价于 OneBot / NapCat 原生 ``{"type":"music","data":{"type":"163","id":"..."}}``，只是多一层兼容包装。
+
+### 入站
+
+接收侧同时识别：
+
+- 原生 ``type: music`` / ``face`` / ``video``
+- ``type: dict`` 且内含上述类型
+- 文本中的网易云链接（仅音乐）
+
+NapCat 出站侧对音乐平台稳定支持 **163**、**qq**；词库里若写了 ``migu`` / ``kugou`` / ``kuwo``，发送时会回退为 ``163``。
 
 ---
 
@@ -251,7 +296,7 @@ entry 结构示例：
 
 - 富媒体通过入站二进制落盘，发送时用 `send.hybrid` / `send.forward`
 - 引用回复、At 使用 MaiBot 消息段（`reply` / `at`）
-- QQ 原生表情（face）尽力支持；视频仅支持本地 ``videos/`` 文件发送，不从消息/引用拉取
+- 音乐 / QQ 表情 / 本地视频经 ``dict`` 包装透传，兼容 MaiBot 1.0.x 与 1.1.x（详见 [宿主兼容性](#宿主兼容性)）
 
 ### 触发挂载点
 
