@@ -48,7 +48,7 @@
 
 ### 环境要求
 
-- **MaiBot** ``1.0.0``–``1.99.99``（在 ``1.0.x`` 与 ``1.1.4`` 验证）
+- **MaiBot** ``1.1.5``–``1.99.99``（原生音乐卡片需要 ``1.1.5+``）
 - **MaiBot Plugin SDK** ``2.x``
 - QQ 侧建议使用官方 [MaiBot-Napcat-Adapter](https://github.com/Mai-with-u/MaiBot-Napcat-Adapter)
 
@@ -85,28 +85,28 @@ data/plugins/maibot_plugin.keywords_reply/
 
 ## 宿主兼容性
 
-本插件声明兼容 **MaiBot 1.0.x 与 1.1.x**（manifest：`1.0.0`–`1.99.99`）。
+本插件声明兼容 **MaiBot 1.1.5+**（manifest：`1.1.5`–`1.99.99`）。MaiBot ``1.1.4`` 及更早版本未包含原生 ``music`` 段透传支持。
 
 ### 音乐 / QQ 表情 / 视频出站
 
 | 宿主 | 说明 |
 |------|------|
-| **1.0.x**（及未修补的旧 hybrid） | 对未知消息段类型会丢掉外层 ``type``。本插件因此用 ``dict`` 包装发送，把真实类型放在 ``data.type``。 |
-| **1.1.x** + NapCat 适配器 | 同样接受上述 ``dict`` 包装；新宿主若已保留 ``music``/``face``/``video`` 外层类型，也可直接识别原生段。 |
+| **音乐卡片** | 始终使用原生 ``music`` 段：``{"type":"music","data":{"type":"163","id":"..."}}``。 |
+| **1.1.5+** + NapCat 适配器 | 支持音乐原生段，以及 QQ 表情 / 视频的兼容包装。 |
 
-出站示例（音乐卡片）::
+出站示例（旧版兼容的 QQ 表情 / 视频）::
 
 ```json
 {
-  "type": "dict",
+  "type": "music",
   "data": {
-    "type": "music",
-    "data": { "type": "163", "id": "28481103" }
+    "type": "163",
+    "id": "28481103"
   }
 }
 ```
 
-等价于 OneBot / NapCat 原生 ``{"type":"music","data":{"type":"163","id":"..."}}``，只是多一层兼容包装。
+音乐卡片使用 OneBot / NapCat 原生 ``{"type":"music","data":{"type":"163","id":"..."}}``，不再使用 ``dict`` 包装。
 
 ### 入站
 
@@ -296,7 +296,7 @@ entry 结构示例：
 
 - 富媒体通过入站二进制落盘，发送时用 `send.hybrid` / `send.forward`
 - 引用回复、At 使用 MaiBot 消息段（`reply` / `at`）
-- 音乐 / QQ 表情 / 本地视频经 ``dict`` 包装透传，兼容 MaiBot 1.0.x 与 1.1.x（详见 [宿主兼容性](#宿主兼容性)）
+- 音乐使用原生 ``music`` 段；QQ 表情 / 本地视频使用兼容性透传包装。宿主版本要求详见 [宿主兼容性](#宿主兼容性)
 
 ### 触发挂载点
 

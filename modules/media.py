@@ -13,9 +13,9 @@ MaiBot 出站消息段格式（见 host message_utils / NapCat 适配器）::
     {"type": "at", "data": {"target_user_id": "123", "target_user_nickname": "昵称"}}
     {"type": "reply", "data": {"target_message_id": "..."}}
 
-音乐 / QQ 表情 / 视频为兼容旧版 Host，经 ``dict`` 包装发出（新宿主与 NapCat 均可识别）::
+音乐使用 MaiBot/NapCat 原生消息段；QQ 表情 / 视频为兼容旧版 Host，经 ``dict`` 包装发出::
 
-    {"type": "dict", "data": {"type": "music", "data": {"type": "163", "id": "28481103"}}}
+    {"type": "music", "data": {"type": "163", "id": "28481103"}}
     {"type": "dict", "data": {"type": "face", "data": {"id": 1}}}
     {"type": "dict", "data": {"type": "video", "data": {"file": "base64://..."}}}
 """
@@ -767,13 +767,13 @@ def _build_passthrough_send_segment(segment_type: str, payload: Any) -> dict:
 
 
 def _build_music_send_segment(card: dict) -> Optional[dict]:
-    """构建音乐卡片发送段（兼容 MaiBot 1.0.x / 1.1.x）。
+    """构建 MaiBot/NapCat 原生音乐卡片发送段。
 
     逻辑负载等价于 OneBot / NapCat 原生::
 
         {"type": "music", "data": {"type": "163", "id": "28481103"}}
 
-    实际经 ``dict`` 包装发出，避免旧版 Host ``hybrid`` 剥离 ``music`` 类型。
+    音乐段必须保留外层 ``type: music``，否则 NapCat 出站解析会失败。
     """
 
     platform = str(card.get("platform") or "").strip()
@@ -783,13 +783,7 @@ def _build_music_send_segment(card: dict) -> Optional[dict]:
     # NapCat 出站编码器仅稳定支持 163 / qq；其余平台回退为网易云。
     if platform not in {"163", "qq"}:
         platform = "163"
-    return _build_passthrough_send_segment(
-        "music",
-        {
-            "type": platform,
-            "id": song_id,
-        },
-    )
+    return {"type": "music", "data": {"type": platform, "id": song_id}}
 
 
 def _append_media_segment(
