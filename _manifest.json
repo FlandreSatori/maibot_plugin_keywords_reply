@@ -2,7 +2,7 @@
   "manifest_version": 2,
   "version": "1.2.3",
   "name": "关键词回复",
-  "description": "支持指令触发与自动监听、多别名、正则匹配、图文/At/表情/语音/本地视频富媒体回复。新版音乐卡片仅支持1.1.4+。",
+  "description": "支持指令触发与自动监听、多别名、正则匹配、图文/At/表情/语音/本地视频富媒体回复。如无法发送音乐卡片尝试更新 MaiBot-Napcat-Adapter",
   "author": {
     "name": "FlandreSatori",
     "url": "https://github.com/FlandreSatori"
@@ -15,7 +15,7 @@
   },
   "changelog": "CHANGELOG.md",
   "host_application": {
-    "min_version": "1.1.4",
+    "min_version": "1.0.0",
     "max_version": "1.99.99"
   },
   "sdk": {

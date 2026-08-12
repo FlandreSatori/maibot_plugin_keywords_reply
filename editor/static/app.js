@@ -10,9 +10,6 @@ const REPLY_KINDS = {
 const MUSIC_PLATFORMS = [
   { value: "163", label: "网易云 163" },
   { value: "qq", label: "QQ音乐" },
-  { value: "migu", label: "咪咕" },
-  { value: "kugou", label: "酷狗" },
-  { value: "kuwo", label: "酷我" },
 ];
 
 const PAGE_SIZE_DEFAULT = 50;
@@ -229,13 +226,13 @@ function entryHasPayload(entry) {
   }
   return Boolean(
     (entry.text || "").trim() ||
-      entry.images?.length ||
-      entry.records?.length ||
-      entry.emojis?.length ||
-      entry.videos?.length ||
-      entry.music_cards?.length ||
-      entry.ats?.length ||
-      entry.faces?.length
+    entry.images?.length ||
+    entry.records?.length ||
+    entry.emojis?.length ||
+    entry.videos?.length ||
+    entry.music_cards?.length ||
+    entry.ats?.length ||
+    entry.faces?.length
   );
 }
 
@@ -615,13 +612,13 @@ function renderMessageGroup(message, messageIndex, rowId) {
   const segments = message.segments || [];
   const segmentRows = segments.length
     ? segments
-        .map((segment, index) =>
-          renderSegmentRow(segment, {
-            isLast: index === segments.length - 1,
-            messageId: message.id,
-          })
-        )
-        .join("")
+      .map((segment, index) =>
+        renderSegmentRow(segment, {
+          isLast: index === segments.length - 1,
+          messageId: message.id,
+        })
+      )
+      .join("")
     : `
       <div class="reply-row part-row is-empty">
         <div class="drag-handle-placeholder"></div>
@@ -1355,10 +1352,9 @@ function render() {
     const checked = state.selected.has(index) ? "checked" : "";
     tr.innerHTML = `
       <td><input type="checkbox" data-select="${index}" ${checked} /></td>
-      <td><strong>${escapeHtml(rule.keyword || "")}</strong>${
-        formatAliases(rule)
-          ? `<div class="entry-preview">别名: ${escapeHtml(formatAliases(rule))}</div>`
-          : ""
+      <td><strong>${escapeHtml(rule.keyword || "")}</strong>${formatAliases(rule)
+        ? `<div class="entry-preview">别名: ${escapeHtml(formatAliases(rule))}</div>`
+        : ""
       }${rule.regex ? '<span class="badge">正则</span>' : ""}</td>
       <td>
         <span class="badge ${rule.enabled ? "on" : "off"}">${rule.enabled ? "启用" : "禁用"}</span>
@@ -2016,11 +2012,13 @@ function bindEvents() {
         URL.revokeObjectURL(url);
         return "keywords.json";
       },
-      { successMessage: (name) => {
-        const text = `已导出 ${name}`;
-        setStatus(text);
-        return text;
-      } },
+      {
+        successMessage: (name) => {
+          const text = `已导出 ${name}`;
+          setStatus(text);
+          return text;
+        }
+      },
     ).catch((err) => setStatus(err.message, true));
   });
 

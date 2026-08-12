@@ -15,7 +15,6 @@
 
 - [特性](#特性)
 - [快速开始](#快速开始)
-- [宿主兼容性](#宿主兼容性)
 - [外部编辑器](#外部编辑器)
 - [管理命令](#管理命令)
 - [回复机制](#回复机制)
@@ -48,9 +47,8 @@
 
 ### 环境要求
 
-- **MaiBot** ``1.1.5``–``1.99.99``（原生音乐卡片需要 ``1.1.5+``）
-- **MaiBot Plugin SDK** ``2.x``
-- QQ 侧建议使用官方 [MaiBot-Napcat-Adapter](https://github.com/Mai-with-u/MaiBot-Napcat-Adapter)
+- **MaiBot** 
+- **MaiBot-Napcat-Adapter**
 
 ### 安装
 
@@ -83,31 +81,6 @@ data/plugins/maibot_plugin.keywords_reply/
 
 ---
 
-## 宿主兼容性
-
-本插件声明兼容 **MaiBot 1.1.5+**（manifest：`1.1.5`–`1.99.99`）。MaiBot ``1.1.4`` 及更早版本未包含原生 ``music`` 段透传支持。
-
-### 音乐 / QQ 表情 / 视频出站
-
-| 宿主 | 说明 |
-|------|------|
-| **音乐卡片** | 始终使用原生 ``music`` 段：``{"type":"music","data":{"type":"163","id":"..."}}``。 |
-| **1.1.5+** + NapCat 适配器 | 支持音乐原生段，以及 QQ 表情 / 视频的兼容包装。 |
-
-出站示例（旧版兼容的 QQ 表情 / 视频）::
-
-```json
-{
-  "type": "music",
-  "data": {
-    "type": "163",
-    "id": "28481103"
-  }
-}
-```
-
-音乐卡片使用 OneBot / NapCat 原生 ``{"type":"music","data":{"type":"163","id":"..."}}``，不再使用 ``dict`` 包装。
-
 ### 入站
 
 接收侧同时识别：
@@ -116,7 +89,7 @@ data/plugins/maibot_plugin.keywords_reply/
 - ``type: dict`` 且内含上述类型
 - 文本中的网易云链接（仅音乐）
 
-NapCat 出站侧对音乐平台稳定支持 **163**、**qq**；词库里若写了 ``migu`` / ``kugou`` / ``kuwo``，发送时会回退为 ``163``。
+NapCat 出站侧对音乐平台目前只支持支持 **163**、**qq**；词库里若写了 ``migu`` / ``kugou`` / ``kuwo``，发送时会回退为 ``163``。
 
 ---
 
@@ -205,7 +178,7 @@ python editor/server.py --data-dir "你的MaiBot/data/plugins/maibot_plugin.keyw
 - 别名：编辑器点「添加别名」逐条增加；聊天里用 `/添加关键词别名 <序号/内容> <别名>`（检测词同理）。
 - 回复正文可省略，直接**引用一条消息**作为内容。
 - 文本中可用 `[@12345]` 转义保存 At。
-- 音乐平台默认 `163`（网易云），可选 `qq` / `migu` / `kugou` / `kuwo`。
+- 音乐平台默认 `163`（网易云），可选 `qq` / `163` 。
 - 图片 / 语音 / 音乐卡片：在同条消息附带，或引用对应消息后发命令；语音需在 `media_cache.group_whitelist` 群内提前缓存。
 - **视频**：仅本地加载，见上文「视频（仅本地加载）」；不可引用 QQ 视频消息导入。
 
@@ -278,37 +251,6 @@ entry 结构示例：
   ]
 }
 ```
-
----
-
-## 与 AstrBot 版差异
-
-<details>
-<summary>点击展开迁移说明</summary>
-
-### 已移除
-
-- 自动撤回（`recall_delay`）—— MaiBot 无撤回接口
-- 合并转发聊天记录导入（`forwards`）—— 无对应 API
-- 内置 WebUI —— 改为 `editor/` 外部编辑器
-
-### 实现变化
-
-- 富媒体通过入站二进制落盘，发送时用 `send.hybrid` / `send.forward`
-- 引用回复、At 使用 MaiBot 消息段（`reply` / `at`）
-- 音乐使用原生 ``music`` 段；QQ 表情 / 本地视频使用兼容性透传包装。宿主版本要求详见 [宿主兼容性](#宿主兼容性)
-
-### 触发挂载点
-
-自动回复挂在 `chat.receive.after_process` Hook；`ON_MESSAGE` 事件处理器仅作未来兼容备用。
-
-</details>
-
----
-
-## 许可证
-
-基于 [astrbot_plugin_keywords_reply](https://github.com/Foolllll-J/astrbot_plugin_keywords_reply) 迁移，遵循相同开源协议。
 
 ---
 
