@@ -3,6 +3,8 @@
 ## 1.2.3
 
 - 音乐卡片改用最新版 NapCat 适配器支持的 ``dict`` / ``music`` 兼容包装。
+- 新增 `modules/music_sign_proxy.py`，可将 NapCat `musicSignUrl` 请求转发到可配置的上游签名接口，不需要修改 MaiBot 或 NapCat 适配器。
+- 音乐签名代理支持 ``qq``、``163``、``kugou``、``kuwo``、``migu``，缺少或不确定的链接参数保持为空。
 
 ## 1.2.2
 

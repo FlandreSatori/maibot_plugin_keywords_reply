@@ -10,6 +10,9 @@ const REPLY_KINDS = {
 const MUSIC_PLATFORMS = [
   { value: "163", label: "网易云 163" },
   { value: "qq", label: "QQ音乐" },
+  { value: "kugou", label: "酷狗音乐" },
+  { value: "kuwo", label: "酷我音乐" },
+  { value: "migu", label: "咪咕音乐" },
 ];
 
 const PAGE_SIZE_DEFAULT = 50;

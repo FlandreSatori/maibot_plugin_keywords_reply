@@ -173,6 +173,52 @@ class MediaCacheConfig(PluginConfigBase):
     )
 
 
+class MusicSignProxyConfig(PluginConfigBase):
+    """本地 NapCat 音乐签名兼容代理配置。"""
+
+    __ui_label__ = "音乐签名代理"
+    __ui_icon__ = "music"
+    __ui_order__ = 6
+
+    enabled: bool = Field(default=False, description="随插件启动本地 musicSignUrl 兼容代理")
+    host: str = Field(default="127.0.0.1", description="代理监听地址")
+    port: int = Field(default=4567, description="代理监听端口")
+    api_url: str = Field(default="https://api.czcn.xyz/api/qqyykp", description="上游音乐签名 API 地址")
+    api_key: str = Field(default="", description="上游音乐签名 API 密钥")
+    music_type: str = Field(default="qq", description="上游音乐类型")
+    timeout: float = Field(default=15.0, description="上游请求超时时间（秒）")
+    lookup_urls: dict[str, dict[str, str]] = Field(
+        default_factory=lambda: {
+            "163": {
+                "detail": "https://music.163.com/api/song/detail?ids=[{id}]",
+                "audio": "https://music-api.gdstudio.xyz/api.php?types=url&source=netease&id={id}",
+                "page": "https://music.163.com/#/song?id={id}",
+            },
+            "qq": {
+                "detail": "",
+                "audio": "",
+                "page": "https://y.qq.com/n/ryqq/songDetail/{id}",
+            }, # 建议参考https://github.com/Rain120/qq-music-api搭建
+            "kugou": {
+                "detail": "",
+                "audio": "",
+                "page": "https://www.kugou.com/song/{id}.html",
+            },
+            "kuwo": {
+                "detail": "",
+                "audio": "https://music-api.gdstudio.xyz/api.php?types=url&source=kuwo&id={id}",
+                "page": "https://www.kuwo.cn/play_detail/{id}",
+            },
+            "migu": {
+                "detail": "",
+                "audio": "",
+                "page": "https://music.migu.cn/v3/music/song/{id}",
+            },
+        },
+        description="按平台查询歌曲详情/音频/页面的 URL 模板，支持 {id} 和 {platform}",
+    )
+
+
 class KeywordsReplyConfig(PluginConfigBase):
     """关键词回复插件配置。"""
 
@@ -182,6 +228,7 @@ class KeywordsReplyConfig(PluginConfigBase):
     detect: DetectConfig = Field(default_factory=DetectConfig)
     template: TemplateConfig = Field(default_factory=TemplateConfig)
     media_cache: MediaCacheConfig = Field(default_factory=MediaCacheConfig)
+    music_sign_proxy: MusicSignProxyConfig = Field(default_factory=MusicSignProxyConfig)
 
 
 # ─── 插件主体 ──────────────────────────────────────────────────
@@ -194,6 +241,28 @@ class KeywordsReplyPlugin(MaiBotPlugin):
     _MEDIA_CACHE_MAX = 500
 
     async def on_load(self) -> None:
+        self._music_sign_proxy = None
+        if self.config.music_sign_proxy.enabled:
+            from .modules import music_sign_proxy
+
+            try:
+                music_sign_proxy.start_server(
+                    host=self.config.music_sign_proxy.host,
+                    port=self.config.music_sign_proxy.port,
+                    api_url=self.config.music_sign_proxy.api_url,
+                    api_key=self.config.music_sign_proxy.api_key,
+                    music_type=self.config.music_sign_proxy.music_type,
+                    timeout=self.config.music_sign_proxy.timeout,
+                    lookup_urls=self.config.music_sign_proxy.lookup_urls,
+                )
+                self._music_sign_proxy = music_sign_proxy
+                self.ctx.logger.info(
+                    "音乐签名代理已启动: http://%s:%d/music_card/card",
+                    self.config.music_sign_proxy.host,
+                    self.config.music_sign_proxy.port,
+                )
+            except OSError as error:
+                self.ctx.logger.error("音乐签名代理启动失败: %s", error)
         self.store = KeywordsStore(self.ctx.paths.data_dir)
         self.store.setup()
         self.matcher = Matcher(self.store, self._settings)
@@ -208,6 +277,9 @@ class KeywordsReplyPlugin(MaiBotPlugin):
 
     async def on_unload(self) -> None:
         self._inbound_media_cache.clear()
+        if self._music_sign_proxy is not None:
+            self._music_sign_proxy.stop_server()
+            self._music_sign_proxy = None
 
     async def on_config_update(self, scope: str, config_data: dict, version: str) -> None:
         del scope, config_data, version

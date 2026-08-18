@@ -89,7 +89,7 @@ data/plugins/maibot_plugin.keywords_reply/
 - ``type: dict`` 且内含上述类型
 - 文本中的网易云链接（仅音乐）
 
-NapCat 出站侧对音乐平台目前只支持支持 **163**、**qq**；词库里若写了 ``migu`` / ``kugou`` / ``kuwo``，发送时会回退为 ``163``。
+NapCat 出站侧支持 **163**、**qq**、**migu**、**kugou**、**kuwo**。启用 ``music_sign_proxy`` 后，代理会按请求中的平台选择对应上游类型；歌曲链接、音频、封面或标题无法确定时会保留为空。
 
 ---
 
@@ -187,7 +187,24 @@ python editor/server.py --data-dir "你的MaiBot/data/plugins/maibot_plugin.keyw
 
   > 星之阁公共音乐签名服务已于 8月4日 10:05 正式无限期关停。
   >
-  > ⚠️需要使用音乐卡片的用户请自行在NapCat设置中填写音乐签名地址。
+  > ⚠️需要使用音乐卡片的用户请自行在 NapCat 设置中填写音乐签名地址。
+
+### 本地音乐签名兼容层
+
+本插件发送的是原生 `music` 消息段，不需要修改 MaiBot 或 NapCat 适配器。若 NapCat 的音乐签名服务不可用，可以运行仓库内的兼容代理：
+
+```powershell
+$env:CZ_MUSIC_KEY = "你的上游API密钥"
+python modules/music_sign_proxy.py
+```
+
+代理默认监听 `http://127.0.0.1:4567/music_card/card`。然后在 NapCat 的音乐签名设置中填写：
+
+```text
+http://127.0.0.1:4567/music_card/card
+```
+
+可先访问 `http://127.0.0.1:4567/health` 检查代理是否启动。上游接口默认使用 `https://api.czcn.xyz/api/qqyykp`，可通过 `CZ_MUSIC_API`、`CZ_MUSIC_KEY`、`CZ_MUSIC_TYPE` 和 `CZ_MUSIC_TIMEOUT` 环境变量配置。
 
 - 图片 / 语音 / 音乐卡片：在同条消息附带，或引用对应消息后发命令；语音需在 `media_cache.group_whitelist` 群内提前缓存。
 
