@@ -9,7 +9,7 @@
 
 - ``CZ_MUSIC_API``：默认 ``https://api.czcn.xyz/api/qqyykp``
 - ``CZ_MUSIC_KEY``：上游 API key
-- ``CZ_MUSIC_TYPE``：无平台信息时的默认平台，默认 ``qq``；支持 ``qq``、``163``、``kugou``、``kuwo``、``migu``
+- ``CZ_DEFAULT_MUSIC_TYPE``：无平台信息时的默认平台，默认 ``qq``；支持 ``qq``、``163``、``kugou``、``kuwo``、``migu``
 - ``MUSIC_PROXY_HOST`` / ``MUSIC_PROXY_PORT``：监听地址和端口
 
 查询 URL 模板由插件配置传入，支持 ``{id}`` 和 ``{platform}`` 占位符；模板为空时跳过对应查询。
@@ -32,7 +32,7 @@ HOST = os.environ.get("MUSIC_PROXY_HOST", "127.0.0.1")
 PORT = int(os.environ.get("MUSIC_PROXY_PORT", "4567"))
 CZ_API = os.environ.get("CZ_MUSIC_API", "https://api.czcn.xyz/api/qqyykp")
 CZ_KEY = os.environ.get("CZ_MUSIC_KEY", "")
-CZ_TYPE = os.environ.get("CZ_MUSIC_TYPE", "qq")
+CZ_TYPE = os.environ.get("CZ_DEFAULT_MUSIC_TYPE", "qq")
 UPSTREAM_TIMEOUT = float(os.environ.get("CZ_MUSIC_TIMEOUT", "15"))
 LOOKUP_URLS: dict[str, dict[str, str]] = {}
 SUPPORTED_PLATFORMS = frozenset({"qq", "163", "kugou", "kuwo", "migu"})
@@ -328,7 +328,7 @@ def start_server(
     port: int = PORT,
     api_url: str = CZ_API,
     api_key: str = CZ_KEY,
-    music_type: str = CZ_TYPE,
+    default_music_type: str = CZ_TYPE,
     timeout: float = UPSTREAM_TIMEOUT,
     lookup_urls: dict[str, dict[str, str]] | None = None,
 ) -> None:
@@ -337,7 +337,7 @@ def start_server(
     global _server, _thread, CZ_API, CZ_KEY, CZ_TYPE, UPSTREAM_TIMEOUT, LOOKUP_URLS
     if _server is not None:
         return
-    CZ_API, CZ_KEY, CZ_TYPE, UPSTREAM_TIMEOUT = api_url, api_key, music_type, timeout
+    CZ_API, CZ_KEY, CZ_TYPE, UPSTREAM_TIMEOUT = api_url, api_key, default_music_type, timeout
     LOOKUP_URLS = lookup_urls or {}
     _server = ThreadingHTTPServer((host, port), MusicSignHandler)
     _thread = threading.Thread(target=_server.serve_forever, name="music-sign-proxy", daemon=True)

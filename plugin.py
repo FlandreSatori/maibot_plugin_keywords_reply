@@ -185,38 +185,23 @@ class MusicSignProxyConfig(PluginConfigBase):
     port: int = Field(default=4567, description="代理监听端口")
     api_url: str = Field(default="https://api.czcn.xyz/api/qqyykp", description="上游音乐签名 API 地址")
     api_key: str = Field(default="", description="上游音乐签名 API 密钥")
-    music_type: str = Field(default="qq", description="上游音乐类型")
+    default_music_type: str = Field(default="qq", description="没有平台信息时使用的默认音乐类型")
     timeout: float = Field(default=15.0, description="上游请求超时时间（秒）")
-    lookup_urls: dict[str, dict[str, str]] = Field(
-        default_factory=lambda: {
-            "163": {
-                "detail": "https://music.163.com/api/song/detail?ids=[{id}]",
-                "audio": "https://music-api.gdstudio.xyz/api.php?types=url&source=netease&id={id}",
-                "page": "https://music.163.com/#/song?id={id}",
-            },
-            "qq": {
-                "detail": "",
-                "audio": "",
-                "page": "https://y.qq.com/n/ryqq/songDetail/{id}",
-            }, # 建议参考https://github.com/Rain120/qq-music-api搭建
-            "kugou": {
-                "detail": "",
-                "audio": "",
-                "page": "https://www.kugou.com/song/{id}.html",
-            },
-            "kuwo": {
-                "detail": "",
-                "audio": "https://music-api.gdstudio.xyz/api.php?types=url&source=kuwo&id={id}",
-                "page": "https://www.kuwo.cn/play_detail/{id}",
-            },
-            "migu": {
-                "detail": "",
-                "audio": "",
-                "page": "https://music.migu.cn/v3/music/song/{id}",
-            },
-        },
-        description="按平台查询歌曲详情/音频/页面的 URL 模板，支持 {id} 和 {platform}",
-    )
+    lookup_163_detail_url: str = Field(default="https://music.163.com/api/song/detail?ids=[{id}]", description="网易云歌曲详情 URL，支持 {id}")
+    lookup_163_audio_url: str = Field(default="https://music-api.gdstudio.xyz/api.php?types=url&source=netease&id={id}", description="网易云音频 URL，支持 {id}")
+    lookup_163_page_url: str = Field(default="https://music.163.com/#/song?id={id}", description="网易云歌曲页面 URL，支持 {id}")
+    lookup_qq_detail_url: str = Field(default="", description="QQ 音乐歌曲详情 URL，支持 {id}")
+    lookup_qq_audio_url: str = Field(default="", description="QQ 音乐音频 URL，支持 {id}")
+    lookup_qq_page_url: str = Field(default="https://y.qq.com/n/ryqq/songDetail/{id}", description="QQ 音乐歌曲页面 URL，支持 {id}")
+    lookup_kugou_detail_url: str = Field(default="", description="酷狗歌曲详情 URL，支持 {id}")
+    lookup_kugou_audio_url: str = Field(default="", description="酷狗音频 URL，支持 {id}")
+    lookup_kugou_page_url: str = Field(default="https://www.kugou.com/song/{id}.html", description="酷狗歌曲页面 URL，支持 {id}")
+    lookup_kuwo_detail_url: str = Field(default="", description="酷我歌曲详情 URL，支持 {id}")
+    lookup_kuwo_audio_url: str = Field(default="https://music-api.gdstudio.xyz/api.php?types=url&source=kuwo&id={id}", description="酷我音频 URL，支持 {id}")
+    lookup_kuwo_page_url: str = Field(default="https://www.kuwo.cn/play_detail/{id}", description="酷我歌曲页面 URL，支持 {id}")
+    lookup_migu_detail_url: str = Field(default="", description="咪咕歌曲详情 URL，支持 {id}")
+    lookup_migu_audio_url: str = Field(default="", description="咪咕音频 URL，支持 {id}")
+    lookup_migu_page_url: str = Field(default="https://music.migu.cn/v3/music/song/{id}", description="咪咕歌曲页面 URL，支持 {id}")
 
 
 class KeywordsReplyConfig(PluginConfigBase):
@@ -251,9 +236,35 @@ class KeywordsReplyPlugin(MaiBotPlugin):
                     port=self.config.music_sign_proxy.port,
                     api_url=self.config.music_sign_proxy.api_url,
                     api_key=self.config.music_sign_proxy.api_key,
-                    music_type=self.config.music_sign_proxy.music_type,
+                    default_music_type=self.config.music_sign_proxy.default_music_type,
                     timeout=self.config.music_sign_proxy.timeout,
-                    lookup_urls=self.config.music_sign_proxy.lookup_urls,
+                    lookup_urls={
+                        "163": {
+                            "detail": self.config.music_sign_proxy.lookup_163_detail_url,
+                            "audio": self.config.music_sign_proxy.lookup_163_audio_url,
+                            "page": self.config.music_sign_proxy.lookup_163_page_url,
+                        },
+                        "qq": {
+                            "detail": self.config.music_sign_proxy.lookup_qq_detail_url,
+                            "audio": self.config.music_sign_proxy.lookup_qq_audio_url,
+                            "page": self.config.music_sign_proxy.lookup_qq_page_url,
+                        },
+                        "kugou": {
+                            "detail": self.config.music_sign_proxy.lookup_kugou_detail_url,
+                            "audio": self.config.music_sign_proxy.lookup_kugou_audio_url,
+                            "page": self.config.music_sign_proxy.lookup_kugou_page_url,
+                        },
+                        "kuwo": {
+                            "detail": self.config.music_sign_proxy.lookup_kuwo_detail_url,
+                            "audio": self.config.music_sign_proxy.lookup_kuwo_audio_url,
+                            "page": self.config.music_sign_proxy.lookup_kuwo_page_url,
+                        },
+                        "migu": {
+                            "detail": self.config.music_sign_proxy.lookup_migu_detail_url,
+                            "audio": self.config.music_sign_proxy.lookup_migu_audio_url,
+                            "page": self.config.music_sign_proxy.lookup_migu_page_url,
+                        },
+                    },
                 )
                 self._music_sign_proxy = music_sign_proxy
                 self.ctx.logger.info(

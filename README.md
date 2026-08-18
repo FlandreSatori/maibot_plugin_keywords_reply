@@ -204,7 +204,7 @@ python modules/music_sign_proxy.py
 http://127.0.0.1:4567/music_card/card
 ```
 
-可先访问 `http://127.0.0.1:4567/health` 检查代理是否启动。上游接口默认使用 `https://api.czcn.xyz/api/qqyykp`，可通过 `CZ_MUSIC_API`、`CZ_MUSIC_KEY`、`CZ_MUSIC_TYPE` 和 `CZ_MUSIC_TIMEOUT` 环境变量配置。
+可先访问 `http://127.0.0.1:4567/health` 检查代理是否启动。上游接口默认使用 `https://api.czcn.xyz/api/qqyykp`，可通过 `CZ_MUSIC_API`、`CZ_MUSIC_KEY`、`CZ_DEFAULT_MUSIC_TYPE` 和 `CZ_MUSIC_TIMEOUT` 环境变量配置。
 
 - 图片 / 语音 / 音乐卡片：在同条消息附带，或引用对应消息后发命令；语音需在 `media_cache.group_whitelist` 群内提前缓存。
 
