@@ -175,6 +175,18 @@ def trigger_matches_detect(
     return True, exact
 
 
+def _coerce_int_value(entry: dict, key: str, default: int) -> int:
+    """将条目字段安全地转换为整数，保留 0 这样的合法值。"""
+
+    value = entry.get(key, default)
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def pick_weighted_entry(entries: List[dict]) -> Optional[dict]:
     """按 weight 加权随机抽取一条 entry。"""
 
@@ -182,10 +194,7 @@ def pick_weighted_entry(entries: List[dict]) -> Optional[dict]:
         return None
     weights = []
     for entry in entries:
-        try:
-            w = int(entry.get("weight", 100) or 100)
-        except (TypeError, ValueError):
-            w = 100
+        w = _coerce_int_value(entry, "weight", 100)
         weights.append(max(0, w))
     if sum(weights) <= 0:
         return random.choice(entries)
@@ -195,10 +204,7 @@ def pick_weighted_entry(entries: List[dict]) -> Optional[dict]:
 def entry_passes_probability(entry: dict) -> bool:
     """按 probability（0-100）判定是否实际发送。"""
 
-    try:
-        p = int(entry.get("probability", 100) or 100)
-    except (TypeError, ValueError):
-        p = 100
+    p = _coerce_int_value(entry, "probability", 100)
     p = max(0, min(100, p))
     if p >= 100:
         return True
