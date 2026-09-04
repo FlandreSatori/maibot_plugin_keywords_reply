@@ -15,6 +15,7 @@
     {
       "keyword": "关键词",
       "aliases": ["别名1", "别名2"],     # 可选；与 keyword 等价触发
+            "tags": ["Z", "问候"],             # 可选；默认按首字拼音归类
       "regex": false,
       "enabled": true,
       "mode": "whitelist" | "blacklist",
@@ -49,6 +50,7 @@ import json
 import logging
 import os
 from pathlib import Path
+import re
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger("plugin.maibot_plugin.keywords_reply")
@@ -80,6 +82,61 @@ _MEDIA_SUFFIX = {
     "emojis": ".gif",
     "videos": ".mp4",
 }
+
+# GBK 编码区间对应的拼音首字母边界。无需额外依赖，适合插件启动时批量归类。
+_PINYIN_INITIAL_BOUNDARIES = (
+    (-20319, "A"), (-20284, "B"), (-19776, "C"), (-19219, "D"),
+    (-18711, "E"), (-18527, "F"), (-18240, "G"), (-17923, "H"),
+    (-17418, "J"), (-16475, "K"), (-16213, "L"), (-15641, "M"),
+    (-15166, "N"), (-14923, "O"), (-14915, "P"), (-14631, "Q"),
+    (-14150, "R"), (-14091, "S"), (-13319, "T"), (-12839, "W"),
+    (-12557, "X"), (-11848, "Y"), (-11056, "Z"),
+)
+
+
+def normalize_tags(value: Any) -> List[str]:
+    """把标签规范为去重字符串列表，保留用户输入顺序。"""
+
+    if isinstance(value, str):
+        items = re.split(r"[|\n,，]+", value)
+    elif isinstance(value, list):
+        items = value
+    else:
+        items = []
+    result: List[str] = []
+    seen: set[str] = set()
+    for item in items:
+        tag = str(item or "").strip()
+        key = tag.casefold()
+        if not tag or key in seen:
+            continue
+        seen.add(key)
+        result.append(tag)
+    return result
+
+
+def default_tag_for_keyword(keyword: Any) -> str:
+    """返回默认分组：英文不分大小写归入 A-Z，中文拼音归入小写 a-z。"""
+
+    text = str(keyword or "").strip()
+    if not text:
+        return "其它"
+    first = text[0]
+    if "A" <= first <= "Z" or "a" <= first <= "z":
+        return first.upper()
+    try:
+        encoded = first.encode("gbk")
+    except UnicodeEncodeError:
+        return "其它"
+    if len(encoded) != 2:
+        return "其它"
+    code = encoded[0] * 256 + encoded[1] - 65536
+    initial = ""
+    for boundary, letter in _PINYIN_INITIAL_BOUNDARIES:
+        if code < boundary:
+            break
+        initial = letter
+    return initial.lower() if initial else "其它"
 
 
 class KeywordsStore:
@@ -139,6 +196,7 @@ class KeywordsStore:
             for cfg in rules:
                 if not isinstance(cfg, dict):
                     continue
+                had_tags = "tags" in cfg
                 cfg.setdefault("keyword", "")
                 primary = str(cfg.get("keyword", "") or "").strip()
                 cfg["keyword"] = primary
@@ -152,6 +210,15 @@ class KeywordsStore:
                 cfg.setdefault("groups", [])
                 cfg.setdefault("entries", [])
                 cfg.setdefault("require_at_bot", False)
+                if had_tags:
+                    tags = normalize_tags(cfg.get("tags"))
+                    # 兼容上一版自动标签：英文旧的小写标签升为大写，中文旧的大写拼音改为小写。
+                    default_tag = default_tag_for_keyword(primary)
+                    if len(tags) == 1 and tags[0].casefold() == default_tag.casefold():
+                        tags = [default_tag]
+                    cfg["tags"] = tags
+                else:
+                    cfg["tags"] = [default_tag_for_keyword(primary)]
                 if section == "auto_detect":
                     cfg.setdefault("case_sensitive", False)
                 for entry in cfg.get("entries", []):

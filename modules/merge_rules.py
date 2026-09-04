@@ -13,6 +13,24 @@ from typing import Any, Dict, List, Tuple
 SECTIONS = ("command_triggered", "auto_detect")
 
 
+def normalize_tags(value: Any) -> List[str]:
+    if isinstance(value, str):
+        items = value.replace("，", ",").replace("|", ",").split(",")
+    elif isinstance(value, list):
+        items = value
+    else:
+        items = []
+    tags: List[str] = []
+    seen: set[str] = set()
+    for item in items:
+        tag = str(item or "").strip()
+        key = tag.casefold()
+        if tag and key not in seen:
+            seen.add(key)
+            tags.append(tag)
+    return tags
+
+
 def _canon(value: Any) -> Any:
     if isinstance(value, dict):
         return {k: _canon(value[k]) for k in sorted(value.keys())}
@@ -129,6 +147,17 @@ def merge_section(rules: List[dict], section: str) -> Tuple[List[dict], Dict[str
 
         base["keyword"] = primary
         base["aliases"] = aliases
+        merged_tags: List[str] = []
+        seen_tags: set[str] = set()
+        for rule in group:
+            for tag in normalize_tags(rule.get("tags")):
+                key = tag.casefold()
+                if key in seen_tags:
+                    continue
+                seen_tags.add(key)
+                merged_tags.append(tag)
+        if merged_tags:
+            base["tags"] = merged_tags
         merged.append(base)
 
         if len(stats["examples"]) < 8:

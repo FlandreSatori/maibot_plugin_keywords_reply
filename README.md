@@ -95,7 +95,7 @@ NapCat 出站侧支持 **163**、**qq**、**migu**、**kugou**、**kuwo**。启�
 
 ## 外部编辑器
 
-目录 [`editor/`](editor/) 提供本地 Web 界面：总览、筛选、搜索、分页、批量增删改、结构化 entry 编辑。
+目录 [`editor/`](editor/) 提供本地 Web 界面：总览、筛选、搜索、分页、批量增删改、标签分组、结构化 entry 编辑，以及 JSON / CSV / SQLite 互转。
 
 **Windows**
 
@@ -114,6 +114,8 @@ python editor/server.py --data-dir "你的MaiBot/data/plugins/maibot_plugin.keyw
 浏览器访问 `http://127.0.0.1:8765`（仅本机）。若设置了 `--token`，请用 `http://主机:端口/?token=密码`。保存后执行 `/重载词库` 或重启 MaiBot。
 
 图片 / 语音 / 表情段只需填写文件名（如 `a.jpg`）；目录前缀由类型自动固定为 `images/`、`records/`、`emojis/`。
+
+词条支持多个 `tags` 标签。没有标签的旧词条会将英文字母不区分大小写自动归入大写 `A` - `Z`，中文按首字拼音归入小写 `a` - `z`，其它字符归入 `其它`；编辑器可按标签筛选，也支持批量追加和移除标签。CSV 中 `section` 使用可读的 `关键词` / `检测词`，`aliases` 在单元格内按换行分隔，`tags` 按半角逗号分隔，空值保持为空。CSV 必须包含完整表头，`entries_json` 会保留完整富媒体回复结构；超过 Excel 单元格上限时会自动分片为连续的 `entries_json_1`、`entries_json_2` 等列，格式不符合预期时导入会直接报错。编辑器支持按添加顺序或标签排序，排序后的顺序会随保存写入；导出可选择全部词条或当前筛选页。SQLite 的 `rules` 表同样保留完整结构，导入后需点击保存，再执行 `/重载词库`。
 
 ### 视频（仅本地加载）
 

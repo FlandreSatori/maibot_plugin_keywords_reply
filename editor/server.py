@@ -30,6 +30,7 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from modules.formats import export_data, import_data  # noqa: E402
 from modules.merge_rules import merge_keywords_file  # noqa: E402
 from modules.store import KeywordsStore  # noqa: E402
 
@@ -140,11 +141,27 @@ class EditorHandler(SimpleHTTPRequestHandler):
         self.wfile.write(body)
 
     def _read_json_body(self) -> Any:
+        raw = self._read_body()
+        if not raw:
+            return None
+        return json.loads(raw.decode("utf-8"))
+
+    def _read_body(self) -> bytes:
         length = int(self.headers.get("Content-Length", "0") or 0)
         if length <= 0:
-            return None
-        raw = self.rfile.read(length)
-        return json.loads(raw.decode("utf-8"))
+            return b""
+        if length > 256 * 1024 * 1024:
+            raise ValueError("文件超过 256 MB 限制")
+        return self.rfile.read(length)
+
+    def _send_file(self, body: bytes, content_type: str, filename: str) -> None:
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+        self.send_header("Content-Length", str(len(body)))
+        self._maybe_set_auth_cookie()
+        self.end_headers()
+        self.wfile.write(body)
 
     def _require_auth(self) -> bool:
         if self._is_authorized():
@@ -181,6 +198,19 @@ class EditorHandler(SimpleHTTPRequestHandler):
                 },
             )
             return
+        if path == "/api/export":
+            query = parse_qs(urlparse(self.path).query)
+            format_name = str((query.get("format") or ["json"])[0]).casefold()
+            store = KeywordsStore(self.data_dir)
+            store.setup()
+            body = export_data(store.data, format_name)
+            if format_name == "csv":
+                self._send_file(body, "text/csv; charset=utf-8", "keywords.csv")
+            elif format_name in {"database", "db"}:
+                self._send_file(body, "application/vnd.sqlite3", "keywords.db")
+            else:
+                self._send_file(body, "application/json; charset=utf-8", "keywords.json")
+            return
 
         # 静态页：若用 ?token= 进入，写入 Cookie 后便于后续 fetch
         if self._token_required() and self._token_matches(self._query_token()):
@@ -202,6 +232,38 @@ class EditorHandler(SimpleHTTPRequestHandler):
         if not self._require_auth():
             return
         path = urlparse(self.path).path
+        if path == "/api/convert":
+            try:
+                query = parse_qs(urlparse(self.path).query)
+                format_name = str((query.get("format") or [""])[0]).casefold()
+                data = import_data(self._read_body(), "json")
+                body = export_data(data, format_name)
+                if format_name == "csv":
+                    self._send_file(body, "text/csv; charset=utf-8", "keywords.csv")
+                elif format_name in {"database", "db"}:
+                    self._send_file(body, "application/vnd.sqlite3", "keywords.db")
+                else:
+                    self._send_file(body, "application/json; charset=utf-8", "keywords.json")
+            except Exception as exc:
+                self._send_json(HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(exc)})
+            return
+        if path == "/api/import":
+            try:
+                query = parse_qs(urlparse(self.path).query)
+                format_name = str((query.get("format") or [""])[0]).casefold()
+                data = import_data(self._read_body(), format_name)
+                self._send_json(
+                    HTTPStatus.OK,
+                    {
+                        "ok": True,
+                        "data": data,
+                        "keyword_count": len(data.get("command_triggered", [])),
+                        "detect_count": len(data.get("auto_detect", [])),
+                    },
+                )
+            except Exception as exc:
+                self._send_json(HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(exc)})
+            return
         if path != "/api/merge-duplicates":
             self._send_json(HTTPStatus.NOT_FOUND, {"ok": False, "error": "not found"})
             return

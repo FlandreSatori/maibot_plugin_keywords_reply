@@ -31,6 +31,7 @@ const state = {
   rowSeq: 0,
   page: 1,
   pageSize: PAGE_SIZE_DEFAULT,
+  sortMode: "insertion",
   replyPage: 1,
   visibleIndices: [],
   searchHay: [],
@@ -70,6 +71,7 @@ function emptyRule() {
     enabled: true,
     mode: "whitelist",
     groups: [],
+    tags: [],
     require_at_bot: false,
     entries: [],
   };
@@ -731,8 +733,9 @@ function summarizeEntry(entry) {
 function buildSearchHay(rule) {
   const keyword = (rule.keyword || "").toLowerCase();
   const aliases = formatAliases(rule).toLowerCase();
+  const tags = (rule.tags || []).join(" ").toLowerCase();
   const entries = rule.entries || [];
-  const head = [keyword, aliases].filter(Boolean).join(" ");
+  const head = [keyword, aliases, tags].filter(Boolean).join(" ");
   if (!entries.length) return head;
   const previews = entries.slice(0, 2).map((entry) => summarizeEntry(entry)).join(" ").toLowerCase();
   return `${head} ${previews}`;
@@ -741,6 +744,25 @@ function buildSearchHay(rule) {
 function rebuildSearchHay() {
   const rules = getRules();
   state.searchHay = rules.map((rule) => buildSearchHay(rule));
+}
+
+function rebuildTagFilter() {
+  const select = $("filterTag");
+  const current = select.value;
+  const tags = new Set();
+  for (const section of ["command_triggered", "auto_detect"]) {
+    for (const rule of state.data[section] || []) {
+      for (const tag of rule.tags || []) {
+        const text = String(tag || "").trim();
+        if (text) tags.add(text);
+      }
+    }
+  }
+  const sorted = [...tags].sort((left, right) => left.localeCompare(right, "zh-CN"));
+  select.innerHTML = `<option value="">全部标签</option>${sorted
+    .map((tag) => `<option value="${escapeHtml(tag)}">${escapeHtml(tag)}</option>`)
+    .join("")}`;
+  select.value = sorted.includes(current) ? current : "";
 }
 
 function summarizeEntriesForList(rule) {
@@ -758,6 +780,7 @@ function getFilterValues() {
     requireAt: $("filterRequireAt").value,
     regex: $("filterRegex").value,
     group: $("filterGroup").value.trim(),
+    tag: $("filterTag").value,
   };
 }
 
@@ -769,6 +792,7 @@ function ruleMatchesFilters(rule, index, filters) {
   if (filters.regex === "yes" && !rule.regex) return false;
   if (filters.regex === "no" && rule.regex) return false;
   if (filters.group && !(rule.groups || []).includes(filters.group)) return false;
+  if (filters.tag && !(rule.tags || []).includes(filters.tag)) return false;
   if (filters.q) {
     const hay = state.searchHay[index] || buildSearchHay(rule);
     if (!hay.includes(filters.q)) return false;
@@ -835,6 +859,33 @@ function getRules() {
 function setRules(rules) {
   state.data[state.section] = rules;
   rebuildSearchHay();
+}
+
+function tagSortKey(rule) {
+  const tags = (rule.tags || []).map((tag) => String(tag || "").trim()).filter(Boolean);
+  return tags.join("\u0000");
+}
+
+function applySortMode() {
+  const ordered = getRules()
+    .map((rule, index) => ({ rule, index }))
+    .sort((left, right) => {
+      if (state.sortMode !== "tag") return left.index - right.index;
+      return tagSortKey(left.rule).localeCompare(tagSortKey(right.rule), "zh-CN") || left.index - right.index;
+    })
+    .map(({ rule }) => rule);
+  setRules(ordered);
+  state.selected.clear();
+  markDirty();
+}
+
+function buildExportData(scope) {
+  if (scope !== "page") return structuredClone(state.data);
+  const selectedRules = getPagedVisibleRules().map(({ rule }) => structuredClone(rule));
+  return {
+    command_triggered: state.section === "command_triggered" ? selectedRules : [],
+    auto_detect: state.section === "auto_detect" ? selectedRules : [],
+  };
 }
 
 function setStatus(text, isError = false) {
@@ -1333,9 +1384,11 @@ function handlePartReorderMove(ev) {
 
 function updatePaginationBar(totalVisible) {
   const totalPages = Math.max(1, Math.ceil(totalVisible / state.pageSize));
-  $("pageInfo").textContent = `第 ${state.page} / ${totalPages} 页`;
-  $("btnPrevPage").disabled = state.page <= 1;
-  $("btnNextPage").disabled = state.page >= totalPages;
+  const pageText = `第 ${state.page} / ${totalPages} 页`;
+  for (const id of ["pageInfo", "pageInfoBottom"]) $(id).textContent = pageText;
+  for (const id of ["btnPrevPage", "btnPrevPageBottom"]) $(id).disabled = state.page <= 1;
+  for (const id of ["btnNextPage", "btnNextPageBottom"]) $(id).disabled = state.page >= totalPages;
+  for (const id of ["pageSize", "pageSizeBottom"]) $(id).value = String(state.pageSize);
 }
 
 function render() {
@@ -1355,16 +1408,14 @@ function render() {
     const checked = state.selected.has(index) ? "checked" : "";
     tr.innerHTML = `
       <td><input type="checkbox" data-select="${index}" ${checked} /></td>
-      <td><strong>${escapeHtml(rule.keyword || "")}</strong>${formatAliases(rule)
-        ? `<div class="entry-preview">别名: ${escapeHtml(formatAliases(rule))}</div>`
-        : ""
-      }${rule.regex ? '<span class="badge">正则</span>' : ""}</td>
+      <td><div class="keyword-cell"><strong class="keyword-line">${escapeHtml(rule.keyword || "")}</strong><div class="alias-line">${formatAliases(rule) ? `别名: ${escapeHtml(formatAliases(rule))}` : ""}</div>${rule.regex ? '<span class="badge">正则</span>' : ""}</div></td>
+      <td>${summarizeEntriesForList(rule)}</td>
       <td>
         <span class="badge ${rule.enabled ? "on" : "off"}">${rule.enabled ? "启用" : "禁用"}</span>
         ${rule.require_at_bot ? '<span class="badge on">需@</span>' : ""}
       </td>
       <td>${escapeHtml(describeGroups(rule))}</td>
-      <td>${summarizeEntriesForList(rule)}</td>
+      <td>${(rule.tags || []).map((tag) => `<span class="badge tag">${escapeHtml(tag)}</span>`).join("") || '<span class="entry-preview">无标签</span>'}</td>
       <td>
         <button class="secondary" data-edit="${index}">编辑</button>
         <button class="secondary" data-copy="${index}">创建副本</button>
@@ -1399,6 +1450,7 @@ function openRuleModal(index = -1) {
   $("ruleRequireAt").checked = !!rule.require_at_bot;
   $("ruleMode").value = rule.mode || "whitelist";
   $("ruleGroups").value = (rule.groups || []).join(",");
+  $("ruleTags").value = (rule.tags || []).join(",");
 
   state.replyRows = entriesToRows(rule.entries || []);
   state.replyPage = 1;
@@ -1424,6 +1476,7 @@ function openRuleCopyModal(index) {
   $("ruleRequireAt").checked = !!copy.require_at_bot;
   $("ruleMode").value = copy.mode || "whitelist";
   $("ruleGroups").value = (copy.groups || []).join(",");
+  $("ruleTags").value = (copy.tags || []).join(",");
   state.replyRows = entriesToRows(copy.entries || []);
   state.replyPage = 1;
   state.selectedEntries.clear();
@@ -1479,6 +1532,9 @@ function saveRuleModal() {
     .filter(Boolean);
 
   const aliases = collectAliases(keyword);
+  const tags = [...new Set(
+    $("ruleTags").value.split(/[,，]/).map((tag) => tag.trim()).filter(Boolean)
+  )];
 
   const rule = {
     keyword,
@@ -1488,14 +1544,17 @@ function saveRuleModal() {
     require_at_bot: $("ruleRequireAt").checked,
     mode: $("ruleMode").value,
     groups,
+    tags,
     entries,
   };
+  if (index < 0 && !tags.length) delete rule.tags;
   if (state.section === "auto_detect") rule.case_sensitive = false;
 
   const rules = [...getRules()];
   if (index >= 0) rules[index] = rule;
   else rules.push(rule);
   setRules(rules);
+  rebuildTagFilter();
   markDirty();
   closeRuleModal();
   refreshList();
@@ -1573,6 +1632,7 @@ async function loadData({ toastTitle = "加载词库" } = {}) {
       state.dirty = false;
       state.page = 1;
       rebuildSearchHay();
+      rebuildTagFilter();
       $("pathMeta").textContent = `数据文件: ${payload.path}`;
       refreshList();
       return payload;
@@ -1688,6 +1748,27 @@ function batchUpdate(mutator) {
   refreshList();
 }
 
+function batchEditTags() {
+  if (!state.selected.size) {
+    alert("请先勾选词条");
+    return;
+  }
+  const raw = prompt("输入标签，逗号分隔。前缀 - 表示移除，例如：问候,日常,-旧标签");
+  if (raw === null) return;
+  const changes = raw.split(/[,，]/).map((tag) => tag.trim()).filter(Boolean);
+  if (!changes.length) return;
+  batchUpdate((rule) => {
+    const tags = new Set((rule.tags || []).map((tag) => String(tag)));
+    for (const change of changes) {
+      if (change.startsWith("-") && change.length > 1) tags.delete(change.slice(1).trim());
+      else tags.add(change);
+    }
+    rule.tags = [...tags].filter(Boolean);
+  });
+  rebuildTagFilter();
+  setStatus(`已更新 ${state.selected.size} 个词条的标签`);
+}
+
 function selectAllRules() {
   const rules = getRules();
   if (!rules.length) {
@@ -1725,6 +1806,8 @@ function selectAllRules() {
 }
 
 function bindEvents() {
+  const bindClick = (ids, handler) => ids.forEach((id) => $(id).addEventListener("click", handler));
+
   document.querySelectorAll(".tab").forEach((btn) => {
     btn.addEventListener("click", () => {
       document.querySelectorAll(".tab").forEach((b) => b.classList.remove("active"));
@@ -1737,29 +1820,32 @@ function bindEvents() {
     });
   });
 
-  ["filterSearch", "filterEnabled", "filterRequireAt", "filterRegex", "filterGroup"].forEach((id) => {
+  ["filterSearch", "filterEnabled", "filterRequireAt", "filterRegex", "filterGroup", "filterTag"].forEach((id) => {
     $(id).addEventListener("input", () => scheduleRender(true));
     $(id).addEventListener("change", () => scheduleRender(true));
   });
 
-  $("pageSize").addEventListener("change", (ev) => {
+  const changePageSize = (ev) => {
     state.pageSize = parseInt(ev.target.value, 10) || PAGE_SIZE_DEFAULT;
     state.page = 1;
     refreshList();
-  });
-  $("btnPrevPage").addEventListener("click", () => {
+  };
+  ["pageSize", "pageSizeBottom"].forEach((id) => $(id).addEventListener("change", changePageSize));
+  const previousPage = () => {
     if (state.page > 1) {
       state.page -= 1;
       queueRender();
     }
-  });
-  $("btnNextPage").addEventListener("click", () => {
+  };
+  bindClick(["btnPrevPage", "btnPrevPageBottom"], previousPage);
+  const nextPage = () => {
     const totalPages = Math.max(1, Math.ceil(state.visibleIndices.length / state.pageSize));
     if (state.page < totalPages) {
       state.page += 1;
       queueRender();
     }
-  });
+  };
+  bindClick(["btnNextPage", "btnNextPageBottom"], nextPage);
   $("btnReplyPrev").addEventListener("click", () => {
     syncReplyRowsFromDom();
     if (state.replyPage > 1) {
@@ -1809,18 +1895,24 @@ function bindEvents() {
     loadData({ toastTitle: "重新加载" }).catch((err) => setStatus(err.message, true));
   });
   $("btnSave").addEventListener("click", () => saveData().catch((err) => setStatus(err.message, true)));
+  $("sortMode").addEventListener("change", (ev) => {
+    state.sortMode = ev.target.value;
+    applySortMode();
+    refreshList();
+  });
   $("btnMergeDupes").addEventListener("click", () =>
     mergeDuplicateRules().catch((err) => setStatus(err.message, true))
   );
-  $("btnAddRule").addEventListener("click", () => openRuleModal(-1));
+  bindClick(["btnAddRule", "btnAddRuleBottom"], () => openRuleModal(-1));
   $("btnRuleCancel").addEventListener("click", closeRuleModal);
   $("btnRuleClose").addEventListener("click", closeRuleModal);
   $("btnRuleSave").addEventListener("click", saveRuleModal);
   bindModalDismiss("ruleModal", closeRuleModal);
   bindEscapeClose(closeRuleModal, "ruleModal");
 
-  $("btnBatchGroup").addEventListener("click", openBatchGroupModal);
-  $("btnSelectAll").addEventListener("click", selectAllRules);
+  bindClick(["btnBatchGroup", "btnBatchGroupBottom"], openBatchGroupModal);
+  bindClick(["btnBatchTags", "btnBatchTagsBottom"], batchEditTags);
+  bindClick(["btnSelectAll", "btnSelectAllBottom"], selectAllRules);
   $("btnBatchGroupCancel").addEventListener("click", closeBatchGroupModal);
   $("btnBatchGroupClose").addEventListener("click", closeBatchGroupModal);
   $("btnBatchGroupSave").addEventListener("click", applyBatchGroup);
@@ -1949,11 +2041,15 @@ function bindEvents() {
     finishPartReorder(false);
   });
 
-  $("btnBatchEnable").addEventListener("click", () => batchUpdate((r) => (r.enabled = true)));
-  $("btnBatchDisable").addEventListener("click", () => batchUpdate((r) => (r.enabled = false)));
-  $("btnBatchRequireAtOn").addEventListener("click", () => batchUpdate((r) => (r.require_at_bot = true)));
-  $("btnBatchRequireAtOff").addEventListener("click", () => batchUpdate((r) => (r.require_at_bot = false)));
-  $("btnBatchDelete").addEventListener("click", () => {
+  const enableSelected = () => batchUpdate((r) => (r.enabled = true));
+  const disableSelected = () => batchUpdate((r) => (r.enabled = false));
+  const requireAtOn = () => batchUpdate((r) => (r.require_at_bot = true));
+  const requireAtOff = () => batchUpdate((r) => (r.require_at_bot = false));
+  bindClick(["btnBatchEnable", "btnBatchEnableBottom"], enableSelected);
+  bindClick(["btnBatchDisable", "btnBatchDisableBottom"], disableSelected);
+  bindClick(["btnBatchRequireAtOn", "btnBatchRequireAtOnBottom"], requireAtOn);
+  bindClick(["btnBatchRequireAtOff", "btnBatchRequireAtOffBottom"], requireAtOff);
+  const deleteSelectedRules = () => {
     if (!state.selected.size) return alert("请先勾选词条");
     if (!confirm(`确定删除 ${state.selected.size} 个词条？此操作不可撤销。`)) return;
     const keep = getRules().filter((_, i) => !state.selected.has(i));
@@ -1961,6 +2057,32 @@ function bindEvents() {
     state.selected.clear();
     markDirty();
     refreshList();
+  };
+  bindClick(["btnBatchDelete", "btnBatchDeleteBottom"], deleteSelectedRules);
+
+  document.querySelectorAll(".column-resizer").forEach((handle) => {
+    handle.addEventListener("pointerdown", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      const col = document.querySelector(`col[data-column="${handle.dataset.column}"]`);
+      const header = handle.parentElement;
+      if (!col || !header) return;
+      const startWidth = header.getBoundingClientRect().width;
+      const startX = ev.clientX;
+      handle.setPointerCapture(ev.pointerId);
+      const move = (moveEvent) => {
+        col.style.width = `${Math.max(52, startWidth + moveEvent.clientX - startX)}px`;
+      };
+      const end = () => {
+        if (handle.hasPointerCapture(ev.pointerId)) handle.releasePointerCapture(ev.pointerId);
+        handle.removeEventListener("pointermove", move);
+        handle.removeEventListener("pointerup", end);
+        handle.removeEventListener("pointercancel", end);
+      };
+      handle.addEventListener("pointermove", move);
+      handle.addEventListener("pointerup", end);
+      handle.addEventListener("pointercancel", end);
+    });
   });
 
   $("checkAll").addEventListener("change", (ev) => {
@@ -1999,21 +2121,40 @@ function bindEvents() {
   });
 
   $("btnExport").addEventListener("click", () => {
+    const format = $("exportFormat").value;
+    const scope = $("exportScope").value;
+    const extension = format === "database" ? "db" : format;
     runWithProgressToast(
-      "导出 JSON",
+      `导出 ${format === "database" ? "SQLite" : format.toUpperCase()}`,
       async (report) => {
         report(18, "准备词库数据…");
         await yieldToUi();
-        report(48, "生成 JSON 文件…");
-        const blob = new Blob([JSON.stringify(state.data, null, 2)], { type: "application/json" });
+        report(48, "生成转换文件…");
+        const res = await fetch(`/api/import?format=json`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(buildExportData(scope)),
+        });
+        const normalized = await res.json();
+        if (!normalized.ok) throw new Error(normalized.error || "规范化失败");
+        const saveRes = await fetch(`/api/convert?format=${encodeURIComponent(format)}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(normalized.data),
+        });
+        if (!saveRes.ok) {
+          const error = await saveRes.json();
+          throw new Error(error.error || "导出失败");
+        }
+        const blob = await saveRes.blob();
         report(78, "触发下载…");
         const url = URL.createObjectURL(blob);
         const a = document.createElement("a");
         a.href = url;
-        a.download = "keywords.json";
+        a.download = `keywords.${extension}`;
         a.click();
         URL.revokeObjectURL(url);
-        return "keywords.json";
+        return `keywords.${extension}`;
       },
       {
         successMessage: (name) => {
@@ -2030,18 +2171,28 @@ function bindEvents() {
     if (!file) return;
     try {
       await runWithProgressToast(
-        "导入 JSON",
+        "导入词库",
         async (report) => {
           report(16, `读取 ${file.name}…`);
-          const text = await file.text();
-          report(52, "解析 JSON…");
+          const extension = file.name.split(".").pop()?.toLowerCase() || "";
+          const format = ["db", "sqlite", "sqlite3"].includes(extension) ? "database" : extension;
+          if (!["json", "csv", "database"].includes(format)) throw new Error("仅支持 JSON、CSV、DB/SQLite 文件");
+          const raw = await file.arrayBuffer();
+          report(52, "解析并规范化…");
           await yieldToUi();
-          const data = JSON.parse(text);
+          const res = await fetch(`/api/import?format=${encodeURIComponent(format)}`, {
+            method: "POST",
+            headers: { "Content-Type": "application/octet-stream" },
+            body: raw,
+          });
+          const payload = await res.json();
+          if (!payload.ok) throw new Error(payload.error || "导入失败");
           report(84, "刷新编辑器…");
-          state.data = data;
+          state.data = payload.data;
           state.selected.clear();
           state.page = 1;
           rebuildSearchHay();
+          rebuildTagFilter();
           markDirty();
           refreshList();
           return file.name;

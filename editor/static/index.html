@@ -1,11 +1,13 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
+
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>关键词回复 · 词库编辑器</title>
   <link rel="stylesheet" href="/style.css" />
 </head>
+
 <body>
   <header>
     <div>
@@ -16,10 +18,20 @@
       <button id="btnReload" class="secondary">重新加载</button>
       <button id="btnSave">保存到磁盘</button>
       <button id="btnMergeDupes" class="secondary" title="将回复相同的词条合并为别名，并自动备份">合并重复词条</button>
-      <button id="btnExport" class="secondary">导出 JSON</button>
+      <select id="exportFormat" class="secondary" title="选择导出格式">
+        <option value="json">导出 JSON</option>
+        <option value="csv">导出 CSV</option>
+        <option value="database">导出 SQLite</option>
+      </select>
+      <select id="exportScope" class="secondary" title="选择导出范围">
+        <option value="all">导出全部</option>
+        <option value="page">导出当前页</option>
+      </select>
+      <button id="btnExport" class="secondary">导出</button>
       <label class="secondary import-label">
-        导入 JSON
-        <input id="importFile" type="file" accept="application/json,.json" hidden />
+        导入词库
+        <input id="importFile" type="file"
+          accept="application/json,.json,text/csv,.csv,application/vnd.sqlite3,.db,.sqlite,.sqlite3" hidden />
       </label>
     </div>
   </header>
@@ -57,12 +69,17 @@
       </select>
       <label>群号（白/黑名单包含）</label>
       <input id="filterGroup" placeholder="例如 673486917" />
+      <label>标签</label>
+      <select id="filterTag">
+        <option value="">全部标签</option>
+      </select>
     </aside>
 
     <section class="content">
       <div class="batch-bar">
         <button id="btnAddRule">新建词条</button>
         <button id="btnSelectAll" class="secondary">全选</button>
+        <button id="btnBatchTags" class="secondary">批量标签</button>
         <button id="btnBatchGroup" class="secondary">批量群策略</button>
         <button id="btnBatchEnable" class="secondary">批量启用</button>
         <button id="btnBatchDisable" class="secondary">批量禁用</button>
@@ -72,6 +89,11 @@
       </div>
       <div class="status-bar" id="statusBar"></div>
       <div class="pagination-bar">
+        <label>排序</label>
+        <select id="sortMode">
+          <option value="insertion">按添加顺序</option>
+          <option value="tag">按标签排序</option>
+        </select>
         <label>每页</label>
         <select id="pageSize">
           <option value="30">30</option>
@@ -85,20 +107,56 @@
       </div>
       <div class="table-wrap">
         <table>
+          <colgroup>
+            <col data-column="0" class="col-select" />
+            <col data-column="1" class="col-keyword" />
+            <col data-column="2" class="col-reply" />
+            <col data-column="3" class="col-status" />
+            <col data-column="4" class="col-groups" />
+            <col data-column="5" class="col-tags" />
+            <col data-column="6" class="col-actions" />
+          </colgroup>
           <thead>
             <tr>
-              <th><input type="checkbox" id="checkAll" /></th>
-              <th>触发词</th>
-              <th>状态</th>
-              <th>群策略</th>
-              <th>回复</th>
-              <th>操作</th>
+              <th><input type="checkbox" id="checkAll" /><span class="column-resizer" data-column="0"
+                  aria-hidden="true"></span></th>
+              <th>触发词<span class="column-resizer" data-column="1" aria-hidden="true"></span></th>
+              <th>回复<span class="column-resizer" data-column="2" aria-hidden="true"></span></th>
+              <th>状态<span class="column-resizer" data-column="3" aria-hidden="true"></span></th>
+              <th>群策略<span class="column-resizer" data-column="4" aria-hidden="true"></span></th>
+              <th>标签<span class="column-resizer" data-column="5" aria-hidden="true"></span></th>
+              <th>操作<span class="column-resizer" data-column="6" aria-hidden="true"></span></th>
             </tr>
           </thead>
           <tbody id="ruleTableBody"></tbody>
         </table>
       </div>
       <div class="empty" id="emptyState" hidden>没有匹配的词条</div>
+      <div class="list-controls-bottom">
+        <div class="batch-bar">
+          <button id="btnAddRuleBottom">新建词条</button>
+          <button id="btnSelectAllBottom" class="secondary">全选</button>
+          <button id="btnBatchTagsBottom" class="secondary">批量标签</button>
+          <button id="btnBatchGroupBottom" class="secondary">批量群策略</button>
+          <button id="btnBatchEnableBottom" class="secondary">批量启用</button>
+          <button id="btnBatchDisableBottom" class="secondary">批量禁用</button>
+          <button id="btnBatchRequireAtOnBottom" class="secondary">批量需@开</button>
+          <button id="btnBatchRequireAtOffBottom" class="secondary">批量需@关</button>
+          <button id="btnBatchDeleteBottom" class="danger">批量删除</button>
+        </div>
+        <div class="pagination-bar">
+          <label>每页</label>
+          <select id="pageSizeBottom">
+            <option value="30">30</option>
+            <option value="50" selected>50</option>
+            <option value="100">100</option>
+            <option value="200">200</option>
+          </select>
+          <button type="button" class="secondary" id="btnPrevPageBottom">上一页</button>
+          <span id="pageInfoBottom">第 1 / 1 页</span>
+          <button type="button" class="secondary" id="btnNextPageBottom">下一页</button>
+        </div>
+      </div>
     </section>
   </main>
 
@@ -131,6 +189,10 @@
           <div>
             <label>群号列表（逗号分隔）</label>
             <input id="ruleGroups" placeholder="123456,789012" />
+          </div>
+          <div>
+            <label>标签（逗号分隔，可自定义）</label>
+            <input id="ruleTags" placeholder="例如 A,问候,日常" />
           </div>
         </div>
 
@@ -175,7 +237,8 @@
             <span id="replyPageInfo">第 1 / 1 页</span>
             <button type="button" class="secondary" id="btnReplyNext">下一页</button>
           </div>
-          <p class="hint">一个复选框对应一个<strong>消息组</strong>，其内包含触发后发送的多条聊天消息；一条消息内多行（文本 / QQ表情 / 图片…）会拼接到同一条消息里发送。长按 ⠿ 可在<strong>同一消息内</strong>拖动排序；<strong>+ 添加下一条消息</strong> ，会按消息1,消息2...的顺序发出</p>
+          <p class="hint">一个复选框对应一个<strong>消息组</strong>，其内包含触发后发送的多条聊天消息；一条消息内多行（文本 / QQ表情 / 图片…）会拼接到同一条消息里发送。长按 ⠿
+            可在<strong>同一消息内</strong>拖动排序；<strong>+ 添加下一条消息</strong> ，会按消息1,消息2...的顺序发出</p>
         </div>
       </div>
 
@@ -236,4 +299,5 @@
 
   <script src="/app.js"></script>
 </body>
+
 </html>
