@@ -39,3 +39,7 @@ enable_text_template = true
 # 仅对白名单群聊缓存入站富媒体（图片/语音/表情），供引用消息导入与管理命令附图使用。
 # 为空时不缓存任何消息，可最大限度降低性能开销；请手动填入需要管理的群号。
 group_whitelist = []
+# 媒体 base64 编码缓存（内存 LRU + 本地磁盘持久化，按使用频率保留），热媒体发送免重复读取编码。
+encode_cache_enabled = true
+# 磁盘编码缓存总上限（MB）；超出按使用频率从低到高淘汰，0 表示不限制。
+encode_cache_max_mb = 500

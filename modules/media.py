@@ -22,6 +22,7 @@ MaiBot 出站消息段格式（见 host message_utils / NapCat 适配器）::
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import http.client
 import ipaddress
@@ -1449,7 +1450,10 @@ async def capture_media_from_trigger(ctx: Any, store: KeywordsStore, message: Di
 
     stream_id = str(message.get("session_id", "") or "").strip()
     local_segments = message.get("raw_message", []) or []
-    local_entry = build_entry_from_segments(local_segments, store, include_text=False)
+    # 媒体下载/落盘为阻塞 IO，卸载到线程池避免卡事件循环
+    local_entry = await asyncio.to_thread(
+        build_entry_from_segments, local_segments, store, include_text=False
+    )
     if store.entry_has_payload(local_entry):
         return local_entry
 
@@ -1459,7 +1463,7 @@ async def capture_media_from_trigger(ctx: Any, store: KeywordsStore, message: Di
 
     segments = await _fetch_message_segments(ctx, message_id, stream_id)
     if segments:
-        return build_entry_from_segments(segments, store, include_text=False)
+        return await asyncio.to_thread(build_entry_from_segments, segments, store, include_text=False)
     return empty
 
 
@@ -1506,7 +1510,11 @@ async def capture_from_reply(
 
     stream_id = str(message.get("session_id", "") or "").strip() if isinstance(message, dict) else ""
     segments = await _fetch_message_segments(ctx, target_id, stream_id)
-    fetched_entry = build_entry_from_segments(segments, store, include_text=True) if segments else empty
+    fetched_entry = (
+        await asyncio.to_thread(build_entry_from_segments, segments, store, include_text=True)
+        if segments
+        else empty
+    )
 
     if _entry_has_media(store, fetched_entry):
         merged = fetched_entry

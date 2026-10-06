@@ -49,9 +49,12 @@ import hashlib
 import json
 import logging
 import os
+from collections import OrderedDict
 from pathlib import Path
 import re
-from typing import Any, Dict, List, Optional
+import threading
+import time
+from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger("plugin.maibot_plugin.keywords_reply")
 
@@ -74,6 +77,10 @@ _MEDIA_CACHE_DIRS = {
 _MEDIA_CACHE_ROOT = "media_cache"
 # media_cache 滚动上限：总文件数超过该值时按 mtime 删最旧的
 _MEDIA_CACHE_MAX_FILES = 100
+
+# 媒体编码缓存（base64）目录与内存上限
+_ENCODE_CACHE_ROOT = "encode_cache"
+_ENCODE_MEM_MAX_BYTES = 64 * 1024 * 1024
 
 # 媒体类型默认后缀
 _MEDIA_SUFFIX = {
@@ -152,6 +159,16 @@ class KeywordsStore:
         self.cache_dirs: Dict[str, Path] = {
             key: self.cache_root / sub for key, sub in _MEDIA_CACHE_DIRS.items()
         }
+        # base64 编码缓存：磁盘持久化 + 内存 LRU；按使用频率淘汰
+        self.encode_cache_root = self.data_dir / _ENCODE_CACHE_ROOT
+        self.encode_cache_enabled = True
+        self.encode_cache_max_bytes = 500 * 1024 * 1024
+        self._b64_mem: "OrderedDict[str, str]" = OrderedDict()
+        self._b64_mem_bytes = 0
+        self._encode_index: Dict[str, Dict[str, float]] = {}
+        self._encode_index_dirty = False
+        self._encode_index_flushed_at = 0.0
+        self._encode_lock = threading.Lock()
         self._save_lock = asyncio.Lock()
         self.data: Dict[str, List[dict]] = {"command_triggered": [], "auto_detect": []}
         self.data_version = 0
@@ -164,6 +181,8 @@ class KeywordsStore:
             path.mkdir(parents=True, exist_ok=True)
         for path in self.cache_dirs.values():
             path.mkdir(parents=True, exist_ok=True)
+        self.encode_cache_root.mkdir(parents=True, exist_ok=True)
+        self._load_encode_index()
         self.data = self.normalize(self._load())
 
     # ─── 加载 / 保存 ────────────────────────────────────────────
@@ -296,16 +315,17 @@ class KeywordsStore:
             entry["weight"] = 100
 
     async def save(self) -> None:
-        """原子写入 JSON。永久媒体目录（images/records/emojis/videos）永不自动清理。"""
+        """原子写入 JSON（序列化与写盘在工作线程执行，避免阻塞事件循环）。
+
+        永久媒体目录（images/records/emojis/videos）永不自动清理。
+        """
 
         async with self._save_lock:
             self.data_version += 1
             tmp_file = self.data_file.with_suffix(".json.tmp")
             try:
-                payload = json.dumps(self.data, ensure_ascii=False, indent=2)
-                with tmp_file.open("w", encoding="utf-8") as f:
-                    f.write(payload)
-                os.replace(tmp_file, self.data_file)
+                payload = await asyncio.to_thread(self._serialize_data)
+                await asyncio.to_thread(self._write_atomic, tmp_file, self.data_file, payload)
             except Exception as exc:
                 logger.error(f"保存关键词数据失败: {exc}")
                 try:
@@ -313,6 +333,19 @@ class KeywordsStore:
                         tmp_file.unlink()
                 except Exception:
                     pass
+
+    def _serialize_data(self) -> str:
+        try:
+            return json.dumps(self.data, ensure_ascii=False, indent=2)
+        except RuntimeError:
+            # 并发修改导致的极端情况：重试一次
+            return json.dumps(self.data, ensure_ascii=False, indent=2)
+
+    @staticmethod
+    def _write_atomic(tmp_file: Path, final_path: Path, payload: str) -> None:
+        with tmp_file.open("w", encoding="utf-8") as f:
+            f.write(payload)
+        os.replace(tmp_file, final_path)
 
     def bump_version(self) -> None:
         """在外部直接修改 data 后手动递增版本号（用于刷新匹配缓存）。"""
@@ -476,28 +509,324 @@ class KeywordsStore:
         return entry
 
     def read_media_base64(self, media_key: str, filename: str) -> Optional[str]:
-        """读取媒体文件并返回 base64；优先永久目录，其次缓存目录。
+        """读取媒体文件并返回 base64。
 
+        读取顺序：内存 LRU → 磁盘编码缓存（encode_cache/）→ 源文件（永久目录 → 缓存目录）。
         ``videos`` 无入站缓存目录，只读永久 ``videos/``。
         """
 
         if media_key not in _MEDIA_DIRS or not filename:
             return None
         name = os.path.basename(filename)
-        candidates = [self.media_dirs[media_key] / name]
+        if not name:
+            return None
+        return self._read_encoded_cached(media_key, name)
+
+    # ─── 编码缓存（base64 持久化，按使用频率保留） ───────────────
+
+    def configure_encode_cache(
+        self,
+        *,
+        enabled: bool = True,
+        max_bytes: int = 500 * 1024 * 1024,
+    ) -> None:
+        """由插件根据配置项设置编码缓存开关与磁盘上限（``0`` 表示不限制）。"""
+
+        self.encode_cache_enabled = bool(enabled)
+        self.encode_cache_max_bytes = max(0, int(max_bytes))
+
+    def flush_encode_index(self) -> None:
+        """强制落盘编码缓存索引（卸载时调用，避免频率统计丢失）。"""
+
+        self._save_encode_index()
+
+    async def preload_media(self, entries: Any) -> None:
+        """发送前预热编码缓存（线程池执行，避免阻塞事件循环）。"""
+
+        if not self.encode_cache_enabled:
+            return
+        if isinstance(entries, dict):
+            entries = [entries]
+        if not isinstance(entries, (list, tuple)):
+            return
+        pending: List[Tuple[str, str]] = []
+        seen: set[Tuple[str, str]] = set()
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            for media_key, name in KeywordsStore.entry_media_files(entry):
+                item = (media_key, name)
+                if item not in seen:
+                    seen.add(item)
+                    pending.append(item)
+        if pending:
+            await asyncio.to_thread(self._preload_sync, pending)
+
+    def _preload_sync(self, pending: List[Tuple[str, str]]) -> None:
+        for media_key, name in pending:
+            self._read_encoded_cached(media_key, name)
+
+    @staticmethod
+    def entry_media_files(entry: Optional[dict]) -> List[Tuple[str, str]]:
+        """收集 entry 引用的全部媒体文件 ``(media_key, filename)``，含 parts 内嵌段。"""
+
+        out: List[Tuple[str, str]] = []
+        if not isinstance(entry, dict):
+            return out
+        for key in _MEDIA_DIRS:
+            items = entry.get(key) or []
+            if not isinstance(items, list):
+                continue
+            for item in items:
+                if isinstance(item, dict):
+                    name = str(item.get("file") or "").strip()
+                    if name:
+                        out.append((key, name))
+        for part in entry.get("parts") or []:
+            for seg in KeywordsStore.get_part_segments(part):
+                seg_type = str(seg.get("type") or "").strip().lower()
+                media_key = {
+                    "image": "images",
+                    "voice": "records",
+                    "record": "records",
+                    "emoji": "emojis",
+                    "video": "videos",
+                }.get(seg_type)
+                if not media_key:
+                    continue
+                name = str(seg.get("file") or "").strip()
+                if name:
+                    out.append((media_key, name))
+        return out
+
+    def _read_encoded_cached(self, media_key: str, name: str) -> Optional[str]:
+        key = f"{media_key}/{name}"
+        if self.encode_cache_enabled:
+            with self._encode_lock:
+                b64 = self._b64_mem.get(key)
+                if b64 is not None:
+                    self._b64_mem.move_to_end(key)
+                    self._touch_index_locked(key, len(b64))
+                    return b64
+            cached = self._read_encode_entry(media_key, name)
+            if cached is not None:
+                with self._encode_lock:
+                    self._b64_mem_put_locked(key, cached)
+                self._touch_index(key, len(cached))
+                self._maybe_flush_index()
+                return cached
+        path = self._resolve_media_path(media_key, name)
+        if path is None:
+            logger.warning(f"媒体文件不存在: {self.media_dirs[media_key] / name}")
+            return None
+        try:
+            raw = path.read_bytes()
+        except Exception as exc:
+            logger.error(f"读取媒体失败({media_key}): {exc}")
+            return None
+        b64 = base64.b64encode(raw).decode("utf-8")
+        if self.encode_cache_enabled:
+            self._write_encode_entry(media_key, name, b64)
+            self._touch_index(key, len(b64))
+            self._prune_encode_cache()
+            self._maybe_flush_index()
+        return b64
+
+    def _resolve_media_path(self, media_key: str, name: str) -> Optional[Path]:
+        """定位源文件：优先永久目录，其次入站缓存目录。"""
+
+        permanent = self.media_dirs[media_key] / name
+        if permanent.is_file():
+            return permanent
         cache_dir = self.cache_dirs.get(media_key)
         if cache_dir is not None:
-            candidates.append(cache_dir / name)
-        for path in candidates:
-            if not path.is_file():
-                continue
-            try:
-                return base64.b64encode(path.read_bytes()).decode("utf-8")
-            except Exception as exc:
-                logger.error(f"读取媒体失败({media_key}): {exc}")
-                return None
-        logger.warning(f"媒体文件不存在: {self.media_dirs[media_key] / name}")
+            cached = cache_dir / name
+            if cached.is_file():
+                return cached
         return None
+
+    def _b64_mem_put_locked(self, key: str, b64: str) -> None:
+        """写入内存 LRU（调用方需持有 ``_encode_lock``），超限淘汰最旧条目。"""
+
+        size = len(b64)
+        if size > _ENCODE_MEM_MAX_BYTES:
+            return
+        old = self._b64_mem.pop(key, None)
+        if old is not None:
+            self._b64_mem_bytes -= len(old)
+        self._b64_mem[key] = b64
+        self._b64_mem_bytes += size
+        while self._b64_mem_bytes > _ENCODE_MEM_MAX_BYTES:
+            _, evicted = self._b64_mem.popitem(last=False)
+            self._b64_mem_bytes -= len(evicted)
+
+    def _touch_index(self, key: str, size: int) -> None:
+        with self._encode_lock:
+            self._touch_index_locked(key, size)
+
+    def _touch_index_locked(self, key: str, size: int) -> None:
+        """更新索引命中频率（调用方需持有 ``_encode_lock``）。"""
+
+        info = self._encode_index.get(key)
+        if info is None:
+            self._encode_index[key] = {"hits": 1, "last": time.time(), "size": int(size)}
+        else:
+            info["hits"] = int(info.get("hits", 0)) + 1
+            info["last"] = time.time()
+            info["size"] = int(size)
+        self._encode_index_dirty = True
+
+    def _encode_entry_path(self, media_key: str, name: str) -> Path:
+        return self.encode_cache_root / media_key / f"{name}.b64"
+
+    def _read_encode_entry(self, media_key: str, name: str) -> Optional[str]:
+        path = self._encode_entry_path(media_key, name)
+        if not path.is_file():
+            return None
+        try:
+            b64 = path.read_text(encoding="utf-8")
+        except Exception as exc:
+            logger.warning(f"读取编码缓存失败({media_key}/{name}): {exc}")
+            return None
+        # 轻量校验：长度非 4 倍数视为损坏，回退源文件
+        if not b64 or len(b64) % 4 != 0:
+            return None
+        return b64
+
+    def _write_encode_entry(self, media_key: str, name: str, b64: str) -> None:
+        path = self._encode_entry_path(media_key, name)
+        tmp = path.with_name(path.name + ".tmp")
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp.write_text(b64, encoding="utf-8")
+            os.replace(tmp, path)
+        except Exception as exc:
+            logger.warning(f"写入编码缓存失败({media_key}/{name}): {exc}")
+            try:
+                if tmp.exists():
+                    tmp.unlink()
+            except Exception:
+                pass
+
+    def _load_encode_index(self) -> None:
+        """加载编码缓存索引并做一致性清理（孤儿文件/丢失条目）。"""
+
+        index_path = self.encode_cache_root / "index.json"
+        index: Dict[str, Dict[str, float]] = {}
+        if index_path.is_file():
+            try:
+                raw = json.loads(index_path.read_text(encoding="utf-8"))
+                if isinstance(raw, dict):
+                    index = {
+                        str(k): dict(v) for k, v in raw.items() if isinstance(v, dict)
+                    }
+            except Exception as exc:
+                logger.warning(f"加载编码缓存索引失败: {exc}")
+        self._encode_index = index
+        self._encode_index_dirty = False
+        self._encode_index_flushed_at = time.time()
+        self._reconcile_encode_cache()
+
+    def _reconcile_encode_cache(self) -> None:
+        """启动时清理：删除索引外的孤儿缓存文件，移除文件已丢失的索引条目。"""
+
+        try:
+            if not self.encode_cache_root.is_dir():
+                return
+            known = set(self._encode_index.keys())
+            for sub in self.encode_cache_root.iterdir():
+                if not sub.is_dir():
+                    continue
+                for path in sub.iterdir():
+                    if not path.is_file():
+                        continue
+                    if path.name.endswith(".tmp"):
+                        try:
+                            path.unlink()
+                        except Exception:
+                            pass
+                        continue
+                    name = path.name[:-4] if path.name.endswith(".b64") else path.name
+                    key = f"{sub.name}/{name}"
+                    if key not in known:
+                        try:
+                            path.unlink()
+                        except Exception:
+                            pass
+            stale: List[str] = []
+            for key in list(self._encode_index.keys()):
+                try:
+                    media_key, name = key.split("/", 1)
+                except ValueError:
+                    stale.append(key)
+                    continue
+                if not self._encode_entry_path(media_key, name).is_file():
+                    stale.append(key)
+            for key in stale:
+                self._encode_index.pop(key, None)
+            if stale:
+                self._encode_index_dirty = True
+        except Exception as exc:
+            logger.warning(f"编码缓存一致性清理失败: {exc}")
+
+    def _save_encode_index(self) -> None:
+        with self._encode_lock:
+            if not self._encode_index_dirty:
+                return
+            payload = json.dumps(self._encode_index, ensure_ascii=False)
+            self._encode_index_dirty = False
+            self._encode_index_flushed_at = time.time()
+        index_path = self.encode_cache_root / "index.json"
+        tmp = index_path.with_name("index.json.tmp")
+        try:
+            tmp.write_text(payload, encoding="utf-8")
+            os.replace(tmp, index_path)
+        except Exception as exc:
+            with self._encode_lock:
+                self._encode_index_dirty = True
+            logger.warning(f"保存编码缓存索引失败: {exc}")
+
+    def _maybe_flush_index(self, interval: float = 60.0) -> None:
+        """索引按 60 秒节流机会式落盘，避免高频写。"""
+
+        if not self._encode_index_dirty:
+            return
+        if time.time() - self._encode_index_flushed_at < interval:
+            return
+        self._save_encode_index()
+
+    def _prune_encode_cache(self) -> int:
+        """磁盘编码缓存超上限时按 (命中次数, 最近使用) 淘汰最冷条目。"""
+
+        limit = self.encode_cache_max_bytes
+        if limit <= 0:
+            return 0
+        with self._encode_lock:
+            total = sum(int(info.get("size", 0)) for info in self._encode_index.values())
+            if total <= limit:
+                return 0
+            items = sorted(
+                self._encode_index.items(),
+                key=lambda kv: (kv[1].get("hits", 0), kv[1].get("last", 0.0)),
+            )
+            victims: List[str] = []
+            for key, info in items:
+                if total <= limit:
+                    break
+                total -= int(info.get("size", 0))
+                victims.append(key)
+            for key in victims:
+                self._encode_index.pop(key, None)
+            self._encode_index_dirty = True
+        removed = 0
+        for key in victims:
+            try:
+                media_key, name = key.split("/", 1)
+                self._encode_entry_path(media_key, name).unlink(missing_ok=True)
+                removed += 1
+            except Exception:
+                pass
+        return removed
 
     # ─── entry 辅助 ─────────────────────────────────────────────
 

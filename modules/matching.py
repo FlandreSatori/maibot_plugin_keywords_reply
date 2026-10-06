@@ -236,6 +236,23 @@ class Matcher:
         self.get_settings = get_settings
         self._last_triggered: Dict[str, float] = {}
         self._regex_cache: Dict[str, Optional[re.Pattern[str]]] = {}
+        # 触发词缓存：按 (数据对象地址, 数据版本) 失效，避免每条消息重复构建
+        self._trigger_cache_version: Optional[tuple[int, int]] = None
+        self._trigger_cache: Dict[str, List[tuple[dict, List[str]]]] = {}
+
+    def _sections_with_triggers(self) -> Dict[str, List[tuple[dict, List[str]]]]:
+        signature = (id(self.store.data), self.store.data_version)
+        if self._trigger_cache_version == signature:
+            return self._trigger_cache
+        cache: Dict[str, List[tuple[dict, List[str]]]] = {}
+        for section in ("command_triggered", "auto_detect"):
+            rows: List[tuple[dict, List[str]]] = []
+            for cfg in self.store.data.get(section, []):
+                rows.append((cfg, rule_triggers(cfg)))
+            cache[section] = rows
+        self._trigger_cache = cache
+        self._trigger_cache_version = signature
+        return cache
 
     def _compiled(self, pattern: str) -> Optional[re.Pattern[str]]:
         if pattern in self._regex_cache:
@@ -283,7 +300,7 @@ class Matcher:
         case_sensitive = bool(settings.get("case_sensitive", False))
 
         candidates: List[tuple[int, dict, str]] = []
-        for cfg in self.store.data.get("command_triggered", []):
+        for cfg, triggers in self._sections_with_triggers().get("command_triggered", []):
             if not cfg.get("enabled", True):
                 continue
             if cfg.get("require_at_bot") and not message_has_bot_mention(is_at, is_mentioned):
@@ -291,7 +308,7 @@ class Matcher:
             if not self._group_allows(cfg, group_id):
                 continue
             is_regex = bool(cfg.get("regex", False))
-            for trigger in rule_triggers(cfg):
+            for trigger in triggers:
                 compiled = self._compiled(trigger) if is_regex else None
                 if not trigger_matches_command(
                     text,
@@ -336,7 +353,7 @@ class Matcher:
         ignore_cd_exact = bool(settings.get("ignore_cooldown_on_exact_match", False))
         now = time.time()
 
-        for cfg in self.store.data.get("auto_detect", []):
+        for cfg, triggers in self._sections_with_triggers().get("auto_detect", []):
             if not cfg.get("enabled", True):
                 continue
             if cfg.get("require_at_bot") and not message_has_bot_mention(is_at, is_mentioned):
@@ -344,7 +361,7 @@ class Matcher:
             is_regex = bool(cfg.get("regex", False))
             hit = ""
             is_exact = False
-            for trigger in rule_triggers(cfg):
+            for trigger in triggers:
                 compiled = self._compiled(trigger) if is_regex else None
                 matched, exact = trigger_matches_detect(
                     text,

@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 from typing import Any, Dict, List, Optional
 
@@ -171,6 +172,14 @@ class MediaCacheConfig(PluginConfigBase):
         default_factory=list,
         description="允许缓存入站富媒体（图片/语音/表情）的群号白名单；为空时不缓存普通消息（管理命令仍会缓存）。视频不走入站缓存。",
     )
+    encode_cache_enabled: bool = Field(
+        default=True,
+        description="启用媒体 base64 编码缓存（内存 LRU + 本地磁盘持久化，按使用频率保留），热媒体发送免重复读取与编码",
+    )
+    encode_cache_max_mb: int = Field(
+        default=500,
+        description="磁盘编码缓存总上限（MB）；超出按使用频率从低到高淘汰，0 表示不限制",
+    )
 
 
 class MusicSignProxyConfig(PluginConfigBase):
@@ -275,6 +284,10 @@ class KeywordsReplyPlugin(MaiBotPlugin):
             except OSError as error:
                 self.ctx.logger.error("音乐签名代理启动失败: %s", error)
         self.store = KeywordsStore(self.ctx.paths.data_dir)
+        self.store.configure_encode_cache(
+            enabled=bool(self.config.media_cache.encode_cache_enabled),
+            max_bytes=max(0, int(self.config.media_cache.encode_cache_max_mb)) * 1024 * 1024,
+        )
         self.store.setup()
         self.matcher = Matcher(self.store, self._settings)
         self._inbound_media_cache: Dict[str, dict] = {}
@@ -288,6 +301,7 @@ class KeywordsReplyPlugin(MaiBotPlugin):
 
     async def on_unload(self) -> None:
         self._inbound_media_cache.clear()
+        self.store.flush_encode_index()
         if self._music_sign_proxy is not None:
             self._music_sign_proxy.stop_server()
             self._music_sign_proxy = None
@@ -374,7 +388,11 @@ class KeywordsReplyPlugin(MaiBotPlugin):
         match_text: str,
         group_id: str,
     ) -> None:
-        """插件被触发时输出 DEBUG 诊断信息。"""
+        """插件被触发时输出 DEBUG 诊断信息（DEBUG 未启用时零开销跳过）。"""
+
+        gate = getattr(self.ctx.logger, "isEnabledFor", None)
+        if gate is not None and not gate(logging.DEBUG):
+            return
 
         trigger = str(match.get("trigger") or "")
         rule = match.get("rule") if isinstance(match.get("rule"), dict) else {}
@@ -573,7 +591,7 @@ class KeywordsReplyPlugin(MaiBotPlugin):
         )
         entry = self.store.merge_entries(entry, reply_imported)
         entry = sanitize_entry_text(entry, self.store)
-        return self.store.promote_entry_media(entry)
+        return await asyncio.to_thread(self.store.promote_entry_media, entry)
 
     async def _dispatch_reply(self, stream_id: str, match: dict, message: Dict[str, Any]) -> None:
         """把命中的回复发送到聊天流。"""
@@ -583,6 +601,7 @@ class KeywordsReplyPlugin(MaiBotPlugin):
         enable_tpl = self.config.template.enable_text_template
 
         if isinstance(payload, list):
+            await self.store.preload_media(payload)
             messages = build_forward_messages(payload, self.store, message, enable_template=enable_tpl)
             if messages:
                 ok = await self.ctx.send.forward(messages, stream_id)
@@ -592,6 +611,7 @@ class KeywordsReplyPlugin(MaiBotPlugin):
 
         if not isinstance(payload, dict):
             return
+        await self.store.preload_media(payload)
         batches = build_ordered_send_batches(
             payload, self.store, message, quote=quote, enable_template=enable_tpl
         )
@@ -603,6 +623,7 @@ class KeywordsReplyPlugin(MaiBotPlugin):
         """发送词条详情预览（含媒体，不做模板渲染）。"""
 
         await self.ctx.send.hybrid([{"type": "text", "content": intro}], stream_id)
+        await self.store.preload_media(entry)
         batches = build_ordered_send_batches(entry, self.store, message, quote=False, render=False)
         for segments in batches:
             if segments:
