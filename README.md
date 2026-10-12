@@ -5,7 +5,7 @@
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](LICENSE)
 [![MaiBot](https://img.shields.io/badge/MaiBot-1.0%20%7C%201.1-blue.svg)](https://github.com/Mai-with-u/MaiBot)
 [![MaiBot SDK](https://img.shields.io/badge/MaiBot%20SDK-2.x-green.svg)](https://github.com/Mai-with-u/maibot-plugin-sdk)
-[![Version](https://img.shields.io/badge/version-1.2.2-orange.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.2.7-orange.svg)](CHANGELOG.md)
 
 ---
 
@@ -254,6 +254,9 @@ entry 使用有序 `parts[]` 时，每一段单独发送一条消息，顺序与
 | | `ignore_cooldown_on_exact_match` | 完全匹配时无视冷却 |
 | `[template]` | `enable_text_template` | 启用变量模板 |
 | `[media_cache]` | `group_whitelist` | 允许缓存入站富媒体的群号；**默认为空** |
+| | `encode_cache_enabled` | 启用媒体 base64 编码缓存（默认 `true`） |
+| | `encode_cache_max_mb` | 编码缓存磁盘上限 MB（默认 500，0 不限） |
+| `[music_sign_proxy]` | `enabled` / `host` / `port` | 随插件启动本地音乐签名代理（默认关闭）；上游地址等见配置内各 `lookup_*` 项 |
 
 ---
 

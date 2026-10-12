@@ -391,15 +391,17 @@ class Matcher:
                     logger.debug(f"检测词冷却中 (session: {session_id})，剩余 {cooldown - elapsed:.1f}s")
                     continue
 
-            if cooldown > 0 and not skip_cooldown:
-                self._last_triggered[session_id] = now
-
             logger.info(f"检测词触发: {hit} (群: {group_id})")
             if self._should_forward(entries, group_id):
+                if cooldown > 0 and not skip_cooldown:
+                    self._last_triggered[session_id] = now
                 return {"payload": list(entries), "rule": cfg, "trigger": hit}
             picked = pick_entry_for_reply(entries)
             if not picked:
                 return None
+            # 仅在确定会发送回复后才写入冷却，避免概率门未命中却静默冷却
+            if cooldown > 0 and not skip_cooldown:
+                self._last_triggered[session_id] = now
             return {"payload": picked, "rule": cfg, "trigger": hit}
         return None
 

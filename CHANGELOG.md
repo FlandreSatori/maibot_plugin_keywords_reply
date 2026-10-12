@@ -1,5 +1,10 @@
 # 更新日志
 
+## 1.2.7
+
+- 修复检测词冷却时序：冷却写入原发生在概率抽取之前，`probability` 未命中（未实际发送回复）也会触发冷却，导致冷却期内该会话后续检测词全部静默；现仅在确定会发送回复（加权抽取命中或合并转发）后才写入冷却。概率未命中时不再静默冷却，但仍会短路后续检测词规则（与既有行为一致）。
+- README 配置说明补全 `media_cache.encode_cache_enabled` / `encode_cache_max_mb` 与 `[music_sign_proxy]` 配置段。
+
 ## 1.2.6
 
 - 新增媒体 base64 编码缓存：内存 LRU（64MB）+ 本地磁盘持久化（`encode_cache/`，按使用频率保留），热媒体发送免重复读取与编码；磁盘上限默认 500MB，可由 `media_cache.encode_cache_max_mb` 配置（0 表示不限制），`media_cache.encode_cache_enabled` 可整体关闭。
